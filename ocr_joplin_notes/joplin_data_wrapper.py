@@ -1,7 +1,14 @@
 import json
 import tempfile
+import logging
 
-from ocr_joplin_notes import rest
+try:
+    from ocr_joplin_notes import rest
+except ModuleNotFoundError as e:
+    import rest
+    logging.warning(f"Error Module Not Found - {e.args}")
+    print(f"Module Not Found: {e.args}")
+    
 
 
 class JoplinNote:

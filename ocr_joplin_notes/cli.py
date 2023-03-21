@@ -2,9 +2,17 @@
 
 """Console script for ocr_joplin_notes."""
 import sys
+import logging
 import click
-from ocr_joplin_notes import run_ocr
-import ocr_joplin_notes
+
+try:
+    from ocr_joplin_notes import run_ocr
+except ModuleNotFoundError as e:
+    import run_ocr
+    logging.warning(f"Error Module Not Found - {e.args}")
+    print(f"Module Not Found: {e.args}")
+
+#import ocr_joplin_notes
 
 
 def parse_argument(arg):
@@ -14,18 +22,25 @@ def parse_argument(arg):
     else:
         return "yes"
 
+try:
+    __version=ocr_joplin_notes.__version__
+except NameError:
+    __version = "0.0.1"
+    logging.warning("Error Module Not Found - Set manual version no")
+    print("Error Module Not Found - Set manual version no")
+
 
 @click.command()
 @click.option(
     "--mode",
     "mode",
-    default="",
+    default="FULL_RUN",
     help="""Specify the mode""",
 )
 @click.option(
     "--tag",
     "tag",
-    default=None,
+    default="ocr-test", #None,
     help="""Specify the Joplin tag""",
 )
 @click.option(
@@ -39,7 +54,7 @@ def parse_argument(arg):
     "-l",
     "--language",
     "language",
-    default="eng",
+    default="deu+eng",
     help="""Specify the OCR Language. Refer to the Tesseract documentation found here: 
     https://github.com/tesseract-ocr/tesseract/wiki""",
 )
@@ -57,12 +72,12 @@ def parse_argument(arg):
     help="""Specify whether to rotate images."""
          """ Default = yes (specify 'no' to disable). """,
 )
-@click.version_option(version=ocr_joplin_notes.__version__)
+@click.version_option(version=__version)
 def main(
-        mode="",
+        mode="FULL_RUN",
         tag=None,
         exclude_tags=None,
-        language="eng",
+        language="deu+eng",
         add_previews="yes",
         autorotation="yes",
 ):

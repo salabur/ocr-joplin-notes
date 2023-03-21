@@ -1,5 +1,5 @@
 import json
-
+import logging
 import requests
 
 
@@ -16,6 +16,7 @@ class RestApi:
             return requests.get(self.__create_url(path), params=params)
         except requests.ConnectionError as e:
             print("** Connection Error.")
+            logging.error(f"** Connection Error. - {e.args}")
             exit(1)
 
     def rest_put(self, path, values):

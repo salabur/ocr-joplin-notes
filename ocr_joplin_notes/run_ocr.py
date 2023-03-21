@@ -1,7 +1,19 @@
 import os
+import logging
 from enum import Enum
-from ocr_joplin_notes import file_ocr
-from ocr_joplin_notes import joplin_data_wrapper
+
+try:
+    from ocr_joplin_notes import file_ocr
+    from ocr_joplin_notes import joplin_data_wrapper
+    #from ocr_joplin_notes.file_ocr import _rotate_image
+except ModuleNotFoundError as e:
+    import file_ocr, joplin_data_wrapper
+    logging.warning(f"Error Module Not Found - {e.args}")
+    print(f"Module Not Found: {e.args}")
+    
+#import ocr_joplin_notes
+#from ocr_joplin_notes import file_ocr
+#from ocr_joplin_notes import joplin_data_wrapper
 
 
 JOPLIN_TOKEN = "not-set"
@@ -158,7 +170,7 @@ def __ocr_resources(note):
         for resource_json in resources:
             resource = Joplin.get_resource_by_id(resource_json.get("id"))
             print(f"- file: {resource.title} [{resource.mime}]")
-            data = __ocr_resource(resource, ADD_PREVIEWS and note.markup_language == 2)
+            data = __ocr_resource(resource, create_preview=ADD_PREVIEWS and note.markup_language == 2)
             if data.success is False:
                 return ResultTag.OCR_FAILED
             elif data.pages is not None and len(data.pages) > 0:
@@ -227,15 +239,18 @@ def __ocr_resource(resource, create_preview=True):
                 return OcrResult(None)
             return OcrResult(result.pages, ResourceType.IMAGE)
         elif mime_type == "application/pdf":
-            ocr_result = file_ocr.extract_text_from_pdf(full_path, language=LANGUAGE)
+            ocr_result = file_ocr.extract_text_from_pdf(full_path, language=LANGUAGE, auto_rotate=AUTOROTATION)
+            create_preview = True
             if ocr_result is None:
                 return OcrResult(None, success=False)
             if create_preview:
+                # preview_file = file_ocr._rotate_image(file_ocr.pdf_page_as_image(full_path, is_preview=True))
                 preview_file = file_ocr.pdf_page_as_image(full_path, is_preview=True)
                 return OcrResult(ocr_result.pages, ResourceType.PDF, preview_file)
             else:
                 return OcrResult(ocr_result.pages, ResourceType.PDF)
     except (TypeError, OSError) as e:
+        logging.error(f'Error while OCR: {e.args}')
         return OcrResult(None, success=False)
     finally:
         try:
