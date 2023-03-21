@@ -1,6 +1,7 @@
 import logging
 import os
 import tempfile
+import argparse
 from uuid import uuid4
 import cv2
 import numpy as np
@@ -9,7 +10,7 @@ import pypdf
 from pypdf.errors import PdfReadError
 from PIL import Image
 from pdf2image import convert_from_path
-from pytesseract import image_to_string, TesseractError
+from pytesseract import image_to_string, TesseractError, image_to_osd, Output
 
 import math
 
@@ -19,6 +20,8 @@ import langcodes
 
 import imutils
 #from alyn import deskew, skew_detect
+
+from PIL import Image
 
 # large images within PDFs cause a decompression bomb error (a form of protection from abuse)
 # this setting allows the user to configure how large an image they are comfortable processing
@@ -60,6 +63,39 @@ def pdf_page_as_image(filename, page_num=0, is_preview=False):
     temp_file = f"{tempfile.gettempdir()}/{uuid4()}.png"
     pages[0].save(temp_file, format="PNG")
     # pages[page_num].save(temp_file, format="PNG")
+    return temp_file
+
+
+
+    temp_file = f"{tempfile.gettempdir()}/{uuid4()}.png"
+    cv2.imwrite(temp_file, img_rotated)
+    return temp_file
+
+
+def _scale_image(image_path, max_resolution=2048):
+    # Load the image
+    img = cv2.imread(image_path)
+    
+    # Get the original width and height
+    height, width = img.shape[:2]
+    
+    # Check if the image is already smaller than the target resolution
+    if height <= max_resolution and width <= max_resolution:
+        return image_path
+    
+    # Calculate the scale factor to fit within the maximum resolution
+    scale_factor = min(max_resolution / width, max_resolution / height)
+    
+    # Calculate the new dimensions
+    new_width = int(width * scale_factor)
+    new_height = int(height * scale_factor)
+    
+    # Resize the image
+    img = cv2.resize(img, (new_width, new_height), interpolation=cv2.INTER_AREA)
+    
+    # Save the resized image
+    temp_file = f"{tempfile.gettempdir()}/{uuid4()}.png"
+    cv2.imwrite(temp_file, img)
     return temp_file
 
 
@@ -105,174 +141,26 @@ def _rotate_image(filename):
     :param filename:
     :return: rotated file
     """
-    # # Inspired by https://www.pyimagesearch.com/2017/02/20/text-skew-correction-opencv-python/
-    # image = cv2.imread(filename, cv2.IMREAD_COLOR) # Initially decode as color
-    # if image is None:
-    #     return None
-    # gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    # gray = cv2.bitwise_not(gray)
-    # threshold = cv2.threshold(gray, 0, 255,
-    #                           cv2.THRESH_BINARY | cv2.THRESH_OTSU)[1]
-    # coordinates = np.column_stack(np.where(threshold > 0))
-    # angle = cv2.minAreaRect(coordinates)[-1]
-    # if angle < -45:
-    #     angle = -(90 + angle)
-    # else:
-    #     angle = -angle
-    # (height, width) = image.shape[:2]
-    # center = (width // 2, height // 2)
-    # matrix = cv2.getRotationMatrix2D(center, angle, 1.0)
-    # cos = np.abs(matrix[0, 0])
-    # sin = np.abs(matrix[0, 1])
-    # new_width = int((height * sin) + (width * cos))
-    # new_height = int((height * cos) + (width * sin))
-    # matrix[0, 2] += (new_width / 2) - center[0]
-    # matrix[1, 2] += (new_height / 2) - center[1]
-    # rotated_image = cv2.warpAffine(image, matrix, (new_width, new_height),
-    #                                flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
-        
+
     # Load the image
     img = cv2.imread(filename)
+    imgOrientation = img.copy()
 
-    # from https://devpress.csdn.net/python/63045f4c7e6682346619aaf7.html
-    textImg = img.copy()
+    rgb = cv2.cvtColor(imgOrientation, cv2.COLOR_BGR2RGB)
 
-    small = cv2.cvtColor(textImg, cv2.COLOR_BGR2GRAY)
+    results = image_to_osd(rgb, output_type=Output.DICT)
+    # display the orientation information
+    print("[INFO] detected orientation: {}".format(
+        results["orientation"]))
+    print("[INFO] rotate by {} degrees to correct".format(
+        results["rotate"]))
+    #print("[INFO] detected script: {}".format(results["script"]))
 
-    #find the gradient map
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-    grad = cv2.morphologyEx(small, cv2.MORPH_GRADIENT, kernel)
-
-    #Binarize the gradient image
-    _, bw = cv2.threshold(grad, 0.0, 255.0, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
-
-    #connect horizontally oriented regions
-    #kernal value (9,1) can be changed to improved the text detection
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (9, 1))
-    connected = cv2.morphologyEx(bw, cv2.MORPH_CLOSE, kernel)
-
-    # using RETR_EXTERNAL instead of RETR_CCOMP
-    # _ , contours, hierarchy = cv2.findContours(connected.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
-    contours, hierarchy = cv2.findContours(connected.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE) #opencv >= 4.0
-
-
-    mask = np.zeros(bw.shape, dtype=np.uint8)
-    #display(mask)
-    #cumulative theta value
-    cummTheta = 0
-    #number of detected text regions
-    ct = 0
-    for idx in range(len(contours)):
-        x, y, w, h = cv2.boundingRect(contours[idx])
-        mask[y:y+h, x:x+w] = 0
-        #fill the contour
-        cv2.drawContours(mask, contours, idx, (255, 255, 255), -1)
-        #display(mask)
-        #ratio of non-zero pixels in the filled region
-        r = float(cv2.countNonZero(mask[y:y+h, x:x+w])) / (w * h)
-
-        #assume at least 45% of the area is filled if it contains text
-        if r > 0.45 and w > 8 and h > 8:
-            #cv2.rectangle(textImg, (x1, y), (x+w-1, y+h-1), (0, 255, 0), 2)
-
-            rect = cv2.minAreaRect(contours[idx])
-            box = cv2.boxPoints(rect)
-            box = np.int0(box)
-            cv2.drawContours(textImg,[box],0,(0,0,255),2)
-
-            #we can filter theta as outlier based on other theta values
-            #this will help in excluding the rare text region with different orientation from ususla value 
-            theta = __slope(box[0][0], box[0][1], box[1][0], box[1][1])
-            cummTheta += theta
-            ct +=1 
-            #print("Theta", theta)
-            
-    #find the average of all cumulative theta value
-    orientation = cummTheta/ct
-    print("Image orientation in degress: ", orientation)
-    finalImage = __rotate(img, orientation)
-    
-    temp_fileb = f"{tempfile.gettempdir()}/{uuid4()}.png"
-    cv2.imwrite(temp_fileb, textImg)
-
-    
+    img_rotated = imutils.rotate_bound(img, angle=results["rotate"])
 
     temp_file = f"{tempfile.gettempdir()}/{uuid4()}.png"
-    cv2.imwrite(temp_file, finalImage)
+    cv2.imwrite(temp_file, img_rotated)
     return temp_file
-
-
-# def _rotate_image(filename):
-#     """
-#      Tries to deskew the image; will not rotate it more than 90 degrees
-#     :param filename:
-#     :return: rotated file
-#     """
-#     # Inspired by https://www.pyimagesearch.com/2017/02/20/text-skew-correction-opencv-python/
-#     image = cv2.imread(filename, cv2.IMREAD_COLOR) # Initially decode as color
-#     if image is None:
-#         return None
-#     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-#     gray = cv2.bitwise_not(gray)
-#     threshold = cv2.threshold(gray, 0, 255,
-#                               cv2.THRESH_BINARY | cv2.THRESH_OTSU)[1]
-#     coordinates = np.column_stack(np.where(threshold > 0))
-#     angle = cv2.minAreaRect(coordinates)[-1]
-#     if angle < -45:
-#         angle = -(90 + angle)
-#     else:
-#         angle = -angle
-#     (height, width) = image.shape[:2]
-#     center = (width // 2, height // 2)
-#     matrix = cv2.getRotationMatrix2D(center, angle, 1.0)
-#     cos = np.abs(matrix[0, 0])
-#     sin = np.abs(matrix[0, 1])
-#     new_width = int((height * sin) + (width * cos))
-#     new_height = int((height * cos) + (width * sin))
-#     matrix[0, 2] += (new_width / 2) - center[0]
-#     matrix[1, 2] += (new_height / 2) - center[1]
-#     rotated_image = cv2.warpAffine(image, matrix, (new_width, new_height),
-#                                    flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
-#     temp_file = f"{tempfile.gettempdir()}/{uuid4()}.png"
-#     cv2.imwrite(temp_file, rotated_image)
-#     return temp_file
-
-# def __rotate_image(filename):
-#     """
-#     Tries to deskew the image; will not rotate it more than 90 degrees
-#     :param filename:
-#     :return: rotated file
-#     """
-#     # Inspired by https://www.pyimagesearch.com/2017/02/20/text-skew-correction-opencv-python/
-#     image = cv2.imread(filename, cv2.IMREAD_COLOR) # Initially decode as color
-#     if image is None:
-#         return None
-#     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-#     gray = cv2.bitwise_not(gray)
-#     threshold = cv2.threshold(gray, 0, 255,
-#                               cv2.THRESH_BINARY | cv2.THRESH_OTSU)[1]
-#     coordinates = np.column_stack(np.where(threshold > 0))
-#     angle = cv2.minAreaRect(coordinates)[-1]
-#     if angle < -45:
-#         angle = -(90 + angle)
-#     else:
-#         angle = -angle
-#     (height, width) = image.shape[:2]
-#     # Calculate the dimensions of the rotated image
-#     radians = math.radians(angle)
-#     new_width = abs(width * math.cos(radians)) + abs(height * math.sin(radians))
-#     new_height = abs(width * math.sin(radians)) + abs(height * math.cos(radians))
-#     # Round up the dimensions to the nearest integer
-#     new_width, new_height = int(math.ceil(new_width)), int(math.ceil(new_height))
-#     # Calculate the center of the image
-#     center = (width // 2, height // 2)
-#     # Get the rotation matrix and apply it to the image
-#     matrix = cv2.getRotationMatrix2D(center, angle, 1.0)
-#     rotated_image = cv2.warpAffine(image, matrix, (new_width, new_height),
-#                                    flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
-#     temp_file = f"{tempfile.gettempdir()}/{uuid4()}.png"
-#     cv2.imwrite(temp_file, rotated_image)
-#     return temp_file
 
 
 def extract_text_from_pdf(filename, language="deu+eng", auto_rotate=False):
