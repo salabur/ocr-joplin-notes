@@ -85,6 +85,7 @@ def main(
          ocr_joplin_nodes <mode> 
     """
     run_ocr.set_mode(mode)
+    
     run_ocr.set_language(language)
     run_ocr.set_autorotation(parse_argument(autorotation))
     run_ocr.set_add_previews(parse_argument(add_previews))
