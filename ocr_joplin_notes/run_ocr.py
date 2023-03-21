@@ -245,7 +245,7 @@ def __ocr_resource(resource, create_preview=True):
                 return OcrResult(None, success=False)
             if create_preview:
                 # preview_file = file_ocr._rotate_image(file_ocr.pdf_page_as_image(full_path, is_preview=True))
-                preview_file = file_ocr.pdf_page_as_image(full_path, is_preview=True)
+                preview_file = file_ocr._scale_image(file_ocr._rotate_image(file_ocr.pdf_page_as_image(full_path, is_preview=True)))
                 return OcrResult(ocr_result.pages, ResourceType.PDF, preview_file)
             else:
                 return OcrResult(ocr_result.pages, ResourceType.PDF)
