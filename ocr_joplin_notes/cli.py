@@ -9,7 +9,7 @@ try:
     from ocr_joplin_notes import run_ocr
 except ModuleNotFoundError as e:
     import run_ocr
-    logging.warning(f"Error Module Not Found - {e.args}")
+    logging.info(f"Error Module Not Found - {e.args}")
     print(f"Module Not Found: {e.args}")
 
 #import ocr_joplin_notes
@@ -26,7 +26,7 @@ try:
     __version=ocr_joplin_notes.__version__
 except NameError:
     __version = "0.0.1"
-    logging.warning("Error Module Not Found - Set manual version no")
+    logging.info("Error Module Not Found - Set manual version no")
     print("Error Module Not Found - Set manual version no")
 
 
@@ -34,13 +34,13 @@ except NameError:
 @click.option(
     "--mode",
     "mode",
-    default="FULL_RUN",
+    default="TAG_NOTES",
     help="""Specify the mode""",
 )
 @click.option(
     "--tag",
     "tag",
-    default="ocr-test", #None,
+    default=None, #None,
     help="""Specify the Joplin tag""",
 )
 @click.option(
@@ -74,7 +74,7 @@ except NameError:
 )
 @click.version_option(version=__version)
 def main(
-        mode="FULL_RUN",
+        mode="TAG_NOTES",
         tag=None,
         exclude_tags=None,
         language="deu+eng",
@@ -85,7 +85,7 @@ def main(
          ocr_joplin_nodes <mode> 
     """
     run_ocr.set_mode(mode)
-    
+
     run_ocr.set_language(language)
     run_ocr.set_autorotation(parse_argument(autorotation))
     run_ocr.set_add_previews(parse_argument(add_previews))

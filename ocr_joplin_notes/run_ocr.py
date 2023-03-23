@@ -10,11 +10,6 @@ except ModuleNotFoundError as e:
     import file_ocr, joplin_data_wrapper
     logging.warning(f"Error Module Not Found - {e.args}")
     print(f"Module Not Found: {e.args}")
-    
-#import ocr_joplin_notes
-#from ocr_joplin_notes import file_ocr
-#from ocr_joplin_notes import joplin_data_wrapper
-
 
 JOPLIN_TOKEN = "not-set"
 if os.environ.get('JOPLIN_TOKEN') is not None:
@@ -75,7 +70,7 @@ def run_mode(mode, tag, exclude_tags):
         return -1
     if mode == "TAG_NOTES":
         print("Tagging notes. This might take a while. You can follow the progress by watching the tags in Joplin")
-        if tag is None and exclude_tags is None:
+        if tag is None and (exclude_tags is None or len(exclude_tags) == 0):
             Joplin.perform_on_all_note_ids(__tag_note_with_source)
         else:
             tag_id = Joplin.find_tag_id_by_title(tag)
@@ -150,8 +145,8 @@ def __is_created_by_rest_uploader(note):
     comment_start = "\n<!---\n" in note.body
     comment_end = "\n-->\n" in note.body
     markup = note.markup_language == 1
-    has_attachment = len(Joplin.get_note_resources(note.id)) > 0
-    return uploaded_from & filename_exists & comment_start & comment_end & markup & has_attachment
+    #has_attachment = len(Joplin.get_note_resources(note.id)) > 0
+    return uploaded_from & filename_exists & comment_start & comment_end & markup #& has_attachment
 
 
 def __perform_ocr_for_note(note_id):
@@ -188,7 +183,7 @@ def __ocr_resources(note):
                     if not DRY_RUN:
                         preview_file_link = __add_preview(note, title, data)
                         result += "\n{}\n".format(preview_file_link)
-                    os.remove(data.preview_file)
+                    #os.remove(data.preview_file)
             else:
                 print("  - No data found")
         if len(result.strip()) > 0:
@@ -208,7 +203,7 @@ def __ocr_resources(note):
 
 
 def __add_preview(note, title, data):
-    res_id = Joplin.save_preview_image_as_resource(note.id, data.preview_file, title)
+    res_id = Joplin.save_preview_image_object_as_resource(note.id, data.preview_file, title)
     if note.markup_language == 1:
         preview_file_link = "![{}](:/{})".format(title, res_id)
     else:
@@ -231,21 +226,28 @@ class OcrResult:
 
 def __ocr_resource(resource, create_preview=True):
     mime_type = resource.mime
-    full_path = Joplin.save_resource_to_file(resource)
+    #full_path = Joplin.save_resource_to_file(resource)
+    full_path = Joplin._get_resource_obj(resource)
+    obj_buffer = file_ocr.get_buffer_for_obj(full_path)
+    # Read the bytes from the buffer
+    bytes_data = obj_buffer.getvalue()
+
     try:
         if mime_type[:5] == "image":
-            result = file_ocr.extract_text_from_image(full_path, auto_rotate=AUTOROTATION, language=LANGUAGE)
+            result = file_ocr.extract_text_from_image_object(obj_buffer, auto_rotate=AUTOROTATION, language=LANGUAGE)
             if result is None:
                 return OcrResult(None)
             return OcrResult(result.pages, ResourceType.IMAGE)
         elif mime_type == "application/pdf":
-            ocr_result = file_ocr.extract_text_from_pdf(full_path, language=LANGUAGE, auto_rotate=AUTOROTATION)
+            ocr_result = file_ocr.extract_text_from_pdf_object(obj_buffer, language=LANGUAGE, auto_rotate=AUTOROTATION)
             create_preview = True
             if ocr_result is None:
                 return OcrResult(None, success=False)
             if create_preview:
                 # preview_file = file_ocr._rotate_image(file_ocr.pdf_page_as_image(full_path, is_preview=True))
-                preview_file = file_ocr._scale_image(file_ocr._rotate_image(file_ocr.pdf_page_as_image(full_path, is_preview=True)))
+                # preview_file = file_ocr._scale_image_object(file_ocr._rotate_image_obj(file_ocr.pdf_obj_page_as_image(bytes_data, is_preview=True)))
+                preview_file = file_ocr._rotate_image_obj(file_ocr.pdf_obj_page_as_image(bytes_data, is_preview=True))
+                # TODO convert
                 return OcrResult(ocr_result.pages, ResourceType.PDF, preview_file)
             else:
                 return OcrResult(ocr_result.pages, ResourceType.PDF)
@@ -254,8 +256,12 @@ def __ocr_resource(resource, create_preview=True):
         return OcrResult(None, success=False)
     finally:
         try:
-            os.remove(full_path)
+            #os.remove(full_path)
+            logging.info('finish one')
         except PermissionError as e:
             print("Permission Error: " + str(e))
             print("File: " + str(resource.title))
             return OcrResult(None, success=False)
+        except TypeError:
+            # obj in ram will be deleted by auto gc
+            pass

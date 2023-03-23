@@ -1,4 +1,3 @@
-import json
 import logging
 import requests
 
@@ -26,12 +25,19 @@ class RestApi:
             print("** Connection Error.")
             exit(1)
 
-    def rest_post(self, path, data=None, files=None):
-        try:
-            return requests.post(self.__create_url(path), data=data, files=files)
-        except requests.ConnectionError as e:
-            print("** Connection Error.")
-            exit(1)
+    def rest_post(self, path, data=None, files=None, headers=None):
+        if headers is None:
+            try:
+                return requests.post(self.__create_url(path), data=data, files=files)
+            except requests.ConnectionError as e:
+                print("** Connection Error.")
+                exit(1)
+        else:
+            try:
+                return requests.post(self.__create_url(path), data=data, files=files, headers=headers)
+            except requests.ConnectionError as e:
+                print("** Connection Error.")
+                exit(1)
 
     def rest_delete(self, path):
         try:

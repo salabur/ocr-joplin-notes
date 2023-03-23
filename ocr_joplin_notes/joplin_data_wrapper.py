@@ -1,6 +1,14 @@
 import json
 import tempfile
 import logging
+import cv2
+
+import tempfile
+import json
+from uuid import uuid4
+import io
+import time
+
 
 try:
     from ocr_joplin_notes import rest
@@ -32,6 +40,9 @@ class JoplinDataWrapper:
 
     def __init__(self, server, token):
         self.REST = rest.RestApi(server, token)
+        self.NOTES = []
+        self.NOTES_amount_total = 0
+        self.NOTES_amount_worked = 0
 
     @staticmethod
     def __paginate_by_title(page: int):
@@ -107,15 +118,87 @@ class JoplinDataWrapper:
         else:
             return 0
 
-    def perform_on_all_note_ids(self, usage_function, page: int = 1):
+    def get_all_notes(self, page: int = 1):
+        print("Getting all notes")
+        self.NOTES = None
+        self.NOTES = []
+        
         res = self.REST.rest_get('/notes', params=self.__paginate_by_title(page))
         notes = res.json()["items"]
+        self.NOTES = self.NOTES + notes
+        more = True
+        while more:
+            if res.json()["has_more"]:
+                page += 1
+                _notes = None
+                res = self.REST.rest_get('/notes', params=self.__paginate_by_title(page))
+                _notes = res.json()["items"]
+                self.NOTES = self.NOTES + _notes
+
+            else:
+                more = False
+
+        return self.NOTES
+
+
+
+    def format_time_string(self, seconds = 1):
+        if not seconds or seconds < 0 or seconds > 86400:
+            return False
+        remaining_time = seconds
+        if remaining_time > 86400:
+            days = int(remaining_time / 86400)
+            if days == 1:
+                remaining_str = time.strftime("1 day, %H:%M:%S", time.gmtime(remaining_time))
+            else:
+                remaining_str = time.strftime(f"{days} days, %H:%M:%S", time.gmtime(remaining_time))
+        elif remaining_time > 3600:
+            remaining_str = time.strftime("%H:%M:%S", time.gmtime(remaining_time))
+        elif remaining_time > 60:
+            remaining_str = time.strftime("%M:%S", time.gmtime(remaining_time))
+        else:
+            remaining_str = f"{remaining_time:.0f} seconds"
+
+        return remaining_str
+
+    def perform_on_all_note_ids(self, usage_function, page: int = 1):
+        # res = self.REST.rest_get('/notes', params=self.__paginate_by_title(page))
+        # notes = res.json()["items"]
+        # _notes_stored = self.NOTES
+        notes = self.get_all_notes()
+        notes_amount = len(notes)
+        notes_ready = 0
+        start_time = time.time()
         for note in notes:
             usage_function(note.get("id"))
-        if res.json()["has_more"]:
-            return self.perform_on_all_note_ids(usage_function, page + 1)
-        else:
-            return None
+
+            notes_ready+=1
+            notes_perc = 100 / notes_amount * notes_ready
+
+            elapsed_time = time.time() - start_time
+            time_per_iteration = elapsed_time / notes_ready
+            remaining_time = time_per_iteration * (notes_amount - notes_ready)
+
+            remaining_str = self.format_time_string(remaining_time)
+            elapsed_time_str = self.format_time_string(elapsed_time)
+
+            print(f"{notes_ready}/{notes_amount} ({notes_perc:.2f}%) of notes ready, {remaining_str} remaining - {elapsed_time_str} elapsed")
+
+
+        print("All notes processed.")
+        return None
+
+    # original function        
+    # def perform_on_all_note_ids(self, usage_function, page: int = 1):
+    #     res = self.REST.rest_get('/notes', params=self.__paginate_by_title(page))
+    #     notes = res.json()["items"]
+    #     notes_amount = len(notes)
+    #     for note in notes:
+    #         usage_function(note.get("id"))
+    #     if res.json()["has_more"]:
+    #         return self.perform_on_all_note_ids(usage_function, page + 1)
+    #     else:
+    #         return None
 
     def get_note_by_id(self, note_id):
         res = self.REST.rest_get('/notes/{}'.format(note_id), params={'fields': 'id,title,body,source,markup_language'})
@@ -131,6 +214,11 @@ class JoplinDataWrapper:
             f.write(file_download.content)
         return full_path
 
+    def _get_resource_obj(self, resource: JoplinResource):
+        file_download = self.REST.rest_get('/resources/{}/file'.format(resource.id), None)
+
+        return file_download
+    
     def get_note_resources(self, note_id):
         res = self.REST.rest_get("/notes/{}/resources/".format(note_id), None)
         return res.json()["items"]
@@ -146,5 +234,40 @@ class JoplinDataWrapper:
                 "data": (json.dumps(filename), file),
                 "props": (None, props),
             }
-            res = self.REST.rest_post("/resources/{}".format(note_id), files=files)
+            headers = {'Content-type': 'application/x-www-form-urlencoded; charset=utf-8'}
+            res = self.REST.rest_post("/resources/{}".format(note_id), files=files, headers=headers)
             return res.json()["id"]
+
+    def save_preview_image_object_as_resource(self, note_id, image_object, title: str):
+        
+        _image_object = image_object
+
+        # Decode the image array
+        img = cv2.imdecode(_image_object, cv2.IMREAD_COLOR)
+
+        # Convert BGR to RGB
+        rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        
+        # Create a buffer to write the image
+        buffer = io.BytesIO()
+
+        # Encode the image to PNG format and write it to the buffer
+        _, encoded = cv2.imencode('.png', rgb)
+        buffer.write(encoded)
+
+        # Reset the buffer position to the beginning
+        buffer.seek(0)
+
+        xy = buffer.getvalue()
+
+        _filename = f"{title}.png"
+        props = f'{{"title":"{title}", "filename":"{title}.png"}}'
+
+        files = {
+            "data": (json.dumps(_filename), xy),
+            "props": (None, props),
+        }
+
+        #headers = {'Content-type': 'application/x-www-form-urlencoded; charset=utf-8'}
+        res = self.REST.rest_post("/resources/{}".format(note_id), files=files)
+        return res.json()["id"]
