@@ -100,9 +100,76 @@ class JoplinDataWrapper:
         res = self.REST.rest_post("/tags/{}/notes".format(tag_id), data='{{ "id" : {} }}'.format(json.dumps(note_id)))
         return tag_id
 
-    def perform_on_tagged_note_ids(self, usage_function, tag_id, exclude_tags, page: int = 1):
+
+    def get_all_notes_with_tag_id(self, tag_id, tag_name):
+        print(f"Getting all notes with tag '{tag_name}'")
+        _notes_all = None
+        page = 1
+
         res = self.REST.rest_get('/tags/{}/notes'.format(tag_id), params=self.__paginate_by_title(page))
-        notes = res.json()["items"]
+        _notes = res.json()["items"]
+
+        _notes_all = _notes
+        more = True
+        while more:
+            if res.json()["has_more"]:         
+                print("...")       
+                page += 1
+                _notes = None
+                res = self.REST.rest_get('/tags/{}/notes'.format(tag_id), params=self.__paginate_by_title(page))
+                _notes = res.json()["items"]
+                _notes_all = _notes_all + _notes
+
+            else:
+                more = False
+
+        return _notes_all
+
+
+
+    def perform_on_tagged_note_ids(self, usage_function, tag_id, exclude_tags, tag_name):
+        # res = self.REST.rest_get('/tags/{}/notes'.format(tag_id), params=self.__paginate_by_title(page))
+        # notes = res.json()["items"]
+
+        notes = self.get_all_notes_with_tag_id(tag_id=tag_id, tag_name=tag_name)
+        notes_amount = len(notes)
+        notes_ready = 0
+        start_time = time.time()
+        for note in notes:
+            note_id = note.get("id")
+            all_tags = self.get_all_tags_from_note(note_id)  # get all tags of the current note
+            # check if any tag in the list exclude_tags is equal to any tag of the current notes' tags
+            if len(set(exclude_tags).intersection(all_tags)) == 0:
+                usage_function(note_id)
+            
+            else:
+                note = self.get_note_by_id(note_id)
+                excluded_tags = set(exclude_tags).intersection(all_tags)
+                print(f"------------------------------------\nnote: {note.title}")
+                print(f"Excluding this note because it contains the following excluded tags: {', '.join(excluded_tags)}")
+
+
+            notes_ready+=1
+            notes_perc = 100 / notes_amount * notes_ready
+
+            elapsed_time = time.time() - start_time
+            time_per_iteration = elapsed_time / notes_ready
+            remaining_time = time_per_iteration * (notes_amount - notes_ready)
+
+            remaining_str = self.format_time_string(remaining_time)
+            elapsed_time_str = self.format_time_string(elapsed_time)
+
+            print(f"{notes_ready}/{notes_amount} ({notes_perc:.2f}%) of notes ready, {remaining_str} remaining - {elapsed_time_str} elapsed")
+
+
+        print("All notes processed.")
+        return None
+
+
+
+
+
+
         for note in notes:
             note_id = note.get("id")
             all_tags = self.get_all_tags_from_note(note_id)  # get all tags of the current note
@@ -118,11 +185,11 @@ class JoplinDataWrapper:
         else:
             return 0
 
-    def get_all_notes(self, page: int = 1):
+    def get_all_notes(self):
         print("Getting all notes")
         self.NOTES = None
         self.NOTES = []
-        
+        page = 1
         res = self.REST.rest_get('/notes', params=self.__paginate_by_title(page))
         notes = res.json()["items"]
         self.NOTES = self.NOTES + notes
@@ -160,6 +227,7 @@ class JoplinDataWrapper:
             remaining_str = f"{remaining_time:.0f} seconds"
 
         return remaining_str
+
 
     def perform_on_all_note_ids(self, usage_function, page: int = 1):
         # res = self.REST.rest_get('/notes', params=self.__paginate_by_title(page))

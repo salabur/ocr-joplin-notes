@@ -31,22 +31,41 @@ except NameError:
 
 
 @click.command()
+# @click.argument(
+#     "observed_folders",
+#     type=click.Path(
+#         exists=True,
+#         file_okay=False,
+#         dir_okay=True,
+#         writable=False,
+#         readable=True,
+#         resolve_path=True,
+#     ),
+# )
+
+@click.option(
+    "--observed-folders",
+    "observed_folders",
+    default="b:/temp/joplin/in",
+    help="""Define the path to the folder containing the files to be processed.""",
+)
+
 @click.option(
     "--mode",
     "mode",
-    default="TAG_NOTES",
+    default="OBSERV_FOLDER",
     help="""Specify the mode""",
 )
 @click.option(
     "--tag",
     "tag",
-    default=None, #None,
+    default="ojn_markup_evernote", #None,
     help="""Specify the Joplin tag""",
 )
 @click.option(
     "--exclude_tags",
     "exclude_tags",
-    default=None,
+    default=["ojn_ocr_added","ojn_ocr_skipped","ojn_ocr_failed"],
     multiple=True,
     help="""Specify the Joplin tags to be excluded""",
 )
@@ -74,18 +93,30 @@ except NameError:
 )
 @click.version_option(version=__version)
 def main(
-        mode="TAG_NOTES",
-        tag=None,
+        mode="OBSERV_FOLDER",
+        tag="ojn_markup_evernote",
         exclude_tags=None,
         language="deu+eng",
         add_previews="yes",
         autorotation="yes",
+        destination="inbox",
+        observed_folders="b:/temp/joplin/in",
+        moveto="b:/temp/joplin/out",
 ):
     f""" Console script for ocr_joplin_notes.
          ocr_joplin_nodes <mode> 
     """
     run_ocr.set_mode(mode)
-
+    notebook_id = run_ocr.set_notebook_id(destination.strip())
+    if notebook_id == "err":
+        click.echo("Joplin may not be running, please ensure it is open.")
+        click.echo("     will check again when processing a file.")
+    elif notebook_id == "":
+        click.echo(f"Invalid Notebook, check to see if {destination.strip()} exists.")
+        click.echo(f"Please specify a valid notebook. Quitting application.")
+        return 0
+    else:
+        click.echo(f"Found Notebook ID: {notebook_id}")
     run_ocr.set_language(language)
     run_ocr.set_autorotation(parse_argument(autorotation))
     run_ocr.set_add_previews(parse_argument(add_previews))
@@ -97,6 +128,22 @@ def main(
     click.echo("Language: " + language)
     click.echo("Add previews: " + add_previews)
     click.echo("Autorotation: " + autorotation)
+    
+    observed_folders = run_ocr.set_observed_folders(observed_folders)
+    moveto = run_ocr.set_moveto(moveto)
+
+
+    if observed_folders == "":
+        click.echo("Files will remain in the monitoring directory")
+    else:
+        click.echo(f"Folder {observed_folders} will be observed")
+    
+        if moveto == "":
+            click.echo("Files will remain in the monitoring directory")
+        else:
+            click.echo("File move to location: " + moveto)
+
+
     res = run_ocr.run_mode(mode, tag, exclude_tags)
     if res == 0:
         click.echo("Finished")

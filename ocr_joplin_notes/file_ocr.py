@@ -21,6 +21,9 @@ import imutils
 #from alyn import deskew, skew_detect
 
 from PIL import Image
+import base64
+import csv
+import imghdr
 
 # large images within PDFs cause a decompression bomb error (a form of protection from abuse)
 # this setting allows the user to configure how large an image they are comfortable processing
@@ -65,7 +68,7 @@ def pdf_page_as_image(filename, page_num=0, is_preview=False):
     return temp_file
 
 
-def pdf_obj_page_as_image(bytes, page_num=0, is_preview=False):
+def pdf_page_as_image_obj(bytes, page_num=0, is_preview=False):
     if not is_preview:
         # high dpi and grayscale for the best OCR result
         pages = convert_from_bytes(bytes,
@@ -143,7 +146,37 @@ def _scale_image_object(image_object, max_resolution=2048):
     return buffer
     
 
+def read_text_note(filename):
+    with open(filename, "r") as myfile:
+        text = myfile.read()
+        print(text)
+    return text
 
+
+def read_csv(filename):
+    return csv.DictReader(open(filename))
+
+
+def encode_image_base64(filename, datatype):
+    encoded = base64.b64encode(open(filename, "rb").read())
+    img = f"data:{datatype};base64,{encoded.decode()}"
+    return img
+
+
+def is_pdf_valid(self, filename):
+    if os.path.isfile(filename) and filename.endswith(".pdf"):
+        try:
+            with open(filename, "rb") as pdf_file:
+                pdf_reader = pypdf.PdfFileReader(pdf_file)
+                if pdf_reader.isEncrypted:
+                    print("The PDF file is encrypted")
+                else:
+                    print("The PDF file is valid and can be opened")
+        except:
+            print("The PDF file is corrupted or cannot be opened")
+    else:
+        print("The file path is not valid or does not lead to a PDF file")
+        
 
 def _scale_image(image_path, max_resolution=2048):
     # Load the image
@@ -208,51 +241,44 @@ def __slope(x1, y1, x2, y2):
     return theta
 
 
-
 def _rotate_image_obj(image_obj):
-    """
-     Tries to deskew the image; will not rotate it more than 90 degrees
-    :param filename:
-    :return: rotated file
-    """
+    if isinstance(image_obj, io.BytesIO):
+        image_obj = image_obj.getvalue()
+    elif isinstance(image_obj, str):
+        if os.path.isfile(image_obj) and imghdr.what(image_obj):
+            image_obj = cv2.imread(image_obj)
+        else:
+            return None    
+    else:
+        print("No valid image object or file does not exist or is not an image")
+        print(type(image_obj))
+        return None    
 
-    # # Read the bytes from the BytesIO object
-    # img_bytes = image_obj.getvalue()
 
-    # Convert the image bytes to a NumPy array
-    img_array = np.frombuffer(image_obj, dtype=np.uint8)
+    # Convert the image bytes to a PIL image object
+    img_pil = Image.open(io.BytesIO(image_obj))
 
-    # Decode the image array
-    img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+    # Convert the PIL image object to a NumPy array
+    img_array = np.array(img_pil)
 
-    # Load the image
-    #img = cv2.imread(image_obj)
-    imgOrientation = img.copy()
+    # Convert the NumPy array to a BGR color image
+    if img_array.ndim == 2:
+        img = cv2.cvtColor(img_array, cv2.COLOR_GRAY2BGR)
+    else:
+        img = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
 
-    rgb = cv2.cvtColor(imgOrientation, cv2.COLOR_BGR2RGB)
+    # Detect the orientation of the image using Tesseract OCR
+    results = image_to_osd(img, output_type=Output.DICT)
 
-    results = image_to_osd(rgb, output_type=Output.DICT)
-    # display the orientation information
-    print("[INFO] detected orientation: {}".format(
-        results["orientation"]))
-    print("[INFO] rotate by {} degrees to correct".format(
-        results["rotate"]))
-    #print("[INFO] detected script: {}".format(results["script"]))
-
+    # Rotate the image to the correct orientation
     img_rotated = imutils.rotate_bound(img, angle=results["rotate"])
 
     # Encode the rotated image as a PNG image in memory
     _, img_encoded = cv2.imencode('.png', img_rotated)
 
-    # # Create a BytesIO object and write the encoded image to it
-    # buffer = io.BytesIO()
-    # buffer.write(img_encoded)
-
-    # # Seek to the beginning of the buffer
-    # buffer.seek(0)
-
-    # Return the buffer
     return img_encoded
+
+
 
 
 def _rotate_image(filename):
@@ -294,13 +320,38 @@ def get_buffer_for_obj(obj):
     return buffer
 
 
+
+def get_buffer_for_obj_bytes(obj):
+        # Create a BytesIO object
+    buffer = io.BytesIO()
+
+    buffer.write(obj)
+    # Seek to the beginning of the object
+    buffer.seek(0)
+
+    return buffer
+
+
 def extract_text_from_pdf_object(pdf_object, language="deu+eng", auto_rotate=False):
 
+    # try:
+    #     pdf_object = open(pdf_object, "rb")
+    # except Exception as e:
+    #     print(f"{e.args}")
 
     pdf_reader = __get_pdf_file_reader(pdf_object)
 
-    # Read the bytes from the buffer
-    bytes_data = pdf_object.getvalue()
+    # pdf_data = pdf_object
+    # try:
+        # Read the bytes from the buffer
+    pdf_data = pdf_object.getvalue()
+    # except:
+    #     try:
+    #         obj_buffer = file_ocr.get_buffer_for_obj(full_path)
+    #         # Read the bytes from the buffer
+    #         pdf_data = obj_buffer.getvalue()
+    #     except:
+    #         pass
 
     if pdf_reader is None:
         return None
@@ -311,9 +362,10 @@ def extract_text_from_pdf_object(pdf_object, language="deu+eng", auto_rotate=Fal
     preview_file = None
     _pages_num = len(pdf_reader.pages)
     print(f"Pages: {_pages_num}")
-    for i in range(len(pdf_reader.pages)):
+    for i, x in enumerate(pdf_reader.pages):
+        #print(f"i={i} x={x}")
         page = pdf_reader.pages[i]
-        extracted_image_obj = pdf_obj_page_as_image(bytes_data, page_num=i)
+        extracted_image_obj = pdf_page_as_image_obj(pdf_data, page_num=i)
         # TODO auto_rotate=False ?? 
         extracted_text_list = extract_text_from_image_object(extracted_image_obj,
                                                         language=language,
@@ -336,7 +388,8 @@ def extract_text_from_pdf_object(pdf_object, language="deu+eng", auto_rotate=Fal
         # 10 or fewer characters is probably just garbage
         if len(selected_text) > 10:
             text.extend([selected_text])
-        return FileOcrResult(text)
+    
+    return FileOcrResult(text)
 
 
 def extract_text_from_pdf(filename, language="deu+eng", auto_rotate=False):
@@ -351,8 +404,11 @@ def extract_text_from_pdf(filename, language="deu+eng", auto_rotate=False):
         preview_file = None
         _pages_num = len(pdf_reader.pages)
         print(f"Pages: {_pages_num}")
-        for i in range(len(pdf_reader.pages)):
+        for i, elem in enumerate(pdf_reader.pages): #len(pdf_reader.pages):#range(len(pdf_reader.pages)):
             page = pdf_reader.pages[i]
+            if page == elem:
+                print("I knew it..")
+
             extracted_image = pdf_page_as_image(filename, page_num=i)
             # TODO auto_rotate=False ?? 
             extracted_text_list = extract_text_from_image(extracted_image,
@@ -365,7 +421,7 @@ def extract_text_from_pdf(filename, language="deu+eng", auto_rotate=False):
             else:
                 extracted_text = ""
                 print(f"Page {i + 1} of {len(pdf_reader.pages)} processed with no text recognized.")
-            embedded_text = "" + page.extract_text()
+            embedded_text = "" + elem.extract_text()
             if len(embedded_text) > len(extracted_text):
                 selected_text = embedded_text
             else:
@@ -405,6 +461,19 @@ def extract_text_from_image_object(image_object, auto_rotate=False, language="en
     try:
         #img = __get_image(image_object)
         # text = image_to_string(img, lang=language)
+
+        #image_object_bytes_data = image_object.getvalue()
+        if isinstance(image_object, io.BytesIO):
+            image_object = image_object.getvalue()
+        elif isinstance(image_object, str):
+            if os.path.isfile(image_object) and imghdr.what(image_object):
+                image_object = cv2.imread(image_object)
+            else:
+                return None    
+        else:
+            print("No valid image object or file does not exist or is not an image")
+            print(type(image_object))
+            return None    
 
         if auto_rotate:
             rotated_image = _rotate_image_obj(image_object)
