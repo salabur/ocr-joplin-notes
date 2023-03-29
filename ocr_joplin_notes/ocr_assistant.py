@@ -1,3 +1,32 @@
+import logging
+import os
+import tempfile
+from uuid import uuid4
+import cv2
+import numpy as np
+import io
+
+#import pypdf
+#from pypdf.errors import PdfReadError
+
+from PIL import Image
+from pdf2image import convert_from_path, convert_from_bytes
+import pikepdf
+import ocrmypdf
+
+from pytesseract import image_to_string, TesseractError, image_to_osd, Output
+
+from nltk import wordpunct_tokenize
+from nltk.corpus import stopwords
+import langcodes
+
+import imutils
+#from alyn import deskew, skew_detect
+
+from PIL import Image
+import base64
+import csv
+import imghdr
 import os
 import logging
 from enum import Enum
@@ -20,24 +49,87 @@ from pathlib import Path
 import pypdf
 
 
-# # DEBUGGING
-# import file_ocr, joplin_data_wrapper
+import io
+import os
+import pikepdf
+import subprocess
+import requests
+import sys, os.path
+
+import io
+import os
+import pikepdf
+import ocrmypdf
+#from ocrmypdf import OCRMyPDF
+import requests
+from PIL import Image
+from typing import Tuple
+import io
+import subprocess
+import pikepdf
+#import fitz
+from PIL import Image
+import requests
+
+import io
+import requests
+from PIL import Image
+from pytesseract import pytesseract
+import pikepdf
+from pikepdf import PdfMatrix
+from pikepdf.models import image as pikeimage
+
+import io
+import requests
+from PIL import Image
+from pytesseract import pytesseract
+import pikepdf
+from pdf2image import convert_from_bytes
+from deskew import determine_skew
+import deskew
+
+import cv2
+import numpy as np
+import imutils
+from pytesseract import Output, image_to_osd
+
+# DEBUGGING
+# from .file_ocr import FileOcr
 
 
-
-#REAL DEAL
 try:
     from ocr_joplin_notes import file_ocr
     from ocr_joplin_notes import joplin_data_wrapper
 except ModuleNotFoundError as e:
-    import file_ocr, joplin_data_wrapper
+    program_dir = (os.path.abspath(os.path.join(os.path.dirname(__file__))))
+    sys.path.append(program_dir)
+    import file_ocr
+    import joplin_data_wrapper
     logging.warning(f"Error Module Not Found - {e.args}")
-    print(f"Module Not Found: {e.args}")
+    #print(f"Module Not Found: {e.args}")
 
 
 
+#, joplin_data_wrapper
+#import file_ocr, joplin_data_wrapper
 
 
+
+#dev
+
+global MAX_UPLOAD_FILE_SIZE
+MAX_UPLOAD_FILE_SIZE = 100000000
+global NOTEBOOK_ID
+NOTEBOOK_ID = ""
+global NOTEBOOK_NAME
+NOTEBOOK_NAME = "inbox"
+global OBSERVED_FOLDERS
+OBSERVED_FOLDERS="b:/temp/joplin/in"
+global AUTOTAG
+AUTOTAG = False
+global MOVETO
+MOVETO = "b:/temp/joplin/out"
+# ########################
 JOPLIN_TOKEN = "not-set"
 if os.environ.get('JOPLIN_TOKEN') is not None:
     JOPLIN_TOKEN = "token=" + os.environ['JOPLIN_TOKEN']
@@ -49,6 +141,69 @@ if os.environ.get('JOPLIN_SERVER') is not None:
 else:
     JOPLIN_SERVER = "http://localhost:41184"
     print("Environment variable JOPLIN_SERVER not set, using default value: http://localhost:41184")
+
+
+
+class DirectoryFileSystemHandler(FileSystemEventHandler):
+
+
+    def _event_handler(self, path):
+        filename, ext = os.path.splitext(path)
+        if ext not in (".tmp", ".part", ".crdownload") and ext[:2] not in (".~"):
+            filesize = self.valid_file(ext, path)
+            if filesize > MAX_UPLOAD_FILE_SIZE:   # was 10000000
+                print(f"Filesize = {filesize}. Maybe too big for Joplin, skipping upload")
+                return False
+            else:
+                i = 1
+                max_retries = 5
+                while i <= max_retries:
+                    if i > 1:
+                        print(f"Retrying file upload {i} of {max_retries}...")
+                    if upload(path) < 0:
+                        time.sleep(5)
+                    else:
+                        return True
+                print(f"Tried {max_retries} times but failed to upload file {path}")
+                return False
+        else:
+            print("Detected temp file. Temp files are ignored.")
+
+    def valid_file(self, ext, path):
+        """Ensure file is completely written before processing"""
+        size_past = -1
+        while True:
+            size_now = os.path.getsize(path)
+            if size_now == size_past:
+                print(f"File xfer complete. Size={size_now}")
+                return size_now
+            else:
+                size_past = os.path.getsize(path)
+                print(f"File transferring...{size_now}")
+                time.sleep(1)
+        return -1
+
+    def on_created(self, event):
+        print(event.event_type + " -- " + event.src_path)
+        self._event_handler(event.src_path)
+
+    def on_moved(self, event):
+        print(event.event_type + " -- " + event.dest_path)
+        self._event_handler(event.dest_path)
+
+
+class ResourceType(Enum):
+    PDF = "pdf"
+    IMAGE = "image"
+
+
+class OcrResult:
+    def __init__(self, pages, input_resource_type=ResourceType.IMAGE, preview_file=None, success=True):
+        self.pages = pages
+        self.input_resource_type = input_resource_type
+        self.preview_file = preview_file
+        self.success = success
+
 
 
 Joplin = joplin_data_wrapper.JoplinDataWrapper(JOPLIN_SERVER, JOPLIN_TOKEN)
@@ -124,81 +279,6 @@ class ResultTag(Enum):
     OCR_ADDED = "ojn_ocr_added"
 
 
-"""
-2018-09-24 JRK
-This program was created to upload files from a folder specified in the
-PATH variable to Joplin. The following resource was helpful in figuring out
-the logic for Watchdog:
-https://stackoverflow.com/questions/18599339/python-watchdog-monitoring-file-for-changes
-
-Tested with the following extensions:
-.md
-.txt
-.pdf
-.png
-.jpg
-.url
-
-Caveat
-Uploader only triggered upon new file creation, not modification
-
-
-Code taken from rest_uploader: https://github.com/cerealkella/rest-uploader
-
-"""
-global MAX_UPLOAD_FILE_SIZE
-MAX_UPLOAD_FILE_SIZE = 100000000
-
-class MyHandler(FileSystemEventHandler):
-
-
-    def _event_handler(self, path):
-        filename, ext = os.path.splitext(path)
-        if ext not in (".tmp", ".part", ".crdownload") and ext[:2] not in (".~"):
-            filesize = self.valid_file(ext, path)
-            if filesize > MAX_UPLOAD_FILE_SIZE:   # was 10000000
-                print(f"Filesize = {filesize}. Maybe too big for Joplin, skipping upload")
-                return False
-            else:
-                i = 1
-                max_retries = 5
-                while i <= max_retries:
-                    if i > 1:
-                        print(f"Retrying file upload {i} of {max_retries}...")
-                    if upload(path) < 0:
-                        time.sleep(5)
-                    else:
-                        return True
-                print(f"Tried {max_retries} times but failed to upload file {path}")
-                return False
-        else:
-            print("Detected temp file. Temp files are ignored.")
-
-    def valid_file(self, ext, path):
-        """Ensure file is completely written before processing"""
-        size_past = -1
-        while True:
-            size_now = os.path.getsize(path)
-            if size_now == size_past:
-                print(f"File xfer complete. Size={size_now}")
-                return size_now
-            else:
-                size_past = os.path.getsize(path)
-                print(f"File transferring...{size_now}")
-                time.sleep(1)
-        return -1
-
-    def on_created(self, event):
-        print(event.event_type + " -- " + event.src_path)
-        self._event_handler(event.src_path)
-
-    def on_moved(self, event):
-        print(event.event_type + " -- " + event.dest_path)
-        self._event_handler(event.dest_path)
-
-
-
-
 def initialize_notebook(notebook_name):
     global NOTEBOOK_NAME
     NOTEBOOK_NAME = notebook_name
@@ -235,7 +315,6 @@ def set_notebook_id(notebook_name=None):
         return "err"
 
 
-
 def create_resource(filename):
     if NOTEBOOK_ID == "":
         set_notebook_id()
@@ -260,7 +339,124 @@ def get_resource(resource_id):
     response = requests.get(apitext)
     return response
 
+def ocr_pdf_image(file_path, languages):
+    with open(file_path, "rb") as file:
+        stream = io.BytesIO(file.read())
 
+    try:
+        pdf = pikepdf.Pdf.open(stream)
+        img_data = pdf_to_image(stream)
+        ocr_text = ocr_all_pages(stream, languages)
+    except pikepdf.PdfError:
+        img = Image.open(stream)
+        img_data = correct_image_obj(img)
+        ocr_text = pytesseract.image_to_string(img_data, lang=languages)
+    except pikepdf.PasswordError:
+        img_data = None
+        ocr_text = None
+        print("The PDF file is encrypted")
+
+    return ocr_text, img_data
+
+
+def pdf_to_image(stream):
+    images = convert_from_bytes(stream.getvalue(), fmt="png", single_file=False)
+    img_data = correct_image_obj(images[0])
+    return img_data
+
+
+def ocr_all_pages(stream, languages):
+    ocr_text = ""
+    images = convert_from_bytes(stream.getvalue(), fmt="png", single_file=False)
+
+    for i, img in enumerate(images):
+        img_data = correct_image_obj(img)
+        ocr_text += pytesseract.image_to_string(img_data, lang=languages) + "\n\n"
+
+    return ocr_text
+
+def ocr_image(file_path, languages):
+    with open(file_path, "rb") as file:
+        stream = io.BytesIO(file.read())
+
+        img = Image.open(stream)
+        img_data = correct_image_obj(img)
+        ocr_text = pytesseract.image_to_string(img_data, lang=languages)
+
+    return ocr_text
+
+# def correct_image(img):
+#     img = img.convert("RGBA")
+#     img = img.rotate(0, expand=True, fillcolor=(255, 255, 255))
+
+#     # Deskew and correct orientation
+#     img_gray = img.convert("L")
+#     img_gray_np = np.array(img_gray)
+#     angle = determine_skew(img_gray_np)
+#     img = img.rotate(-angle, expand=True, fillcolor=(255, 255, 255))
+
+#     return img
+
+
+def correct_image_obj(img):
+    # Convert the PIL Image to a NumPy array for OpenCV
+    img_np = np.array(img)
+    img_np = img_np[:, :, ::-1].copy()  # Convert from RGB to BGR (OpenCV uses BGR)
+
+    # Detect the orientation and rotation angle
+    try:
+        results = image_to_osd(img_np, output_type=Output.DICT)
+        #print("[INFO] detected orientation: {}".format(results["orientation"]))
+        #print("[INFO] rotate by {} degrees to correct".format(results["rotate"]))
+
+        # Rotate the image
+        img_rotated = imutils.rotate_bound(img_np, angle=results["rotate"])
+    except TesseractError as e:
+        logging.warning(f'Error while getting immage rotation: {e}')
+        img_rotated = img_np
+
+    # Convert the rotated image back to a PIL Image
+    img_rotated = img_rotated[:, :, ::-1].copy()  # Convert from BGR to RGB
+    img_rotated_pil = Image.fromarray(img_rotated)
+
+    return img_rotated_pil
+
+
+
+def encode_image(img, datatype):
+    img_bytes = io.BytesIO()
+    img.save(img_bytes, format="PNG")
+    img_bytes = img_bytes.getvalue()
+    encoded = base64.b64encode(img_bytes)
+    encoded_img = f"data:{datatype};base64,{encoded.decode()}"
+    return encoded_img
+
+def encode_image_file(filename, datatype):
+    encoded = base64.b64encode(open(filename, "rb").read())
+    img = f"data:{datatype};base64,{encoded.decode()}"
+    return img
+
+def rename_file(basefile, filePath=None):
+    if filePath is None:
+        # Separate the directory, filename, and extension
+        dirname, filename = os.path.split(basefile)
+        old_fullpath = basefile
+    else:
+        dirname = filePath
+        filename = basefile
+        old_fullpath = os.path.join(filePath, basefile)
+
+    name, ext = os.path.splitext(filename)
+
+    # Construct the new filename and full path
+    new_filename = f"__already_imported_{name}{ext}"
+    new_filepath = os.path.join(dirname, new_filename)
+
+
+    # Rename the file
+    os.rename(old_fullpath, new_filepath)
+
+    return new_filepath
 
 def upload(filename): # TODO Fix removal of img_processor
     """ Get the default Notebook ID and process the passed in file"""
@@ -281,19 +477,20 @@ def upload(filename): # TODO Fix removal of img_processor
         table = file_ocr.read_csv(filename)
         body += tabulate(table, headers="keys", numalign="right", tablefmt="pipe")
         values = set_json_string(title, NOTEBOOK_ID, body)
+
     elif datatype[:5] == "image":
-        #img_processor = ImageProcessor(LANGUAGE)
 
         body += "\n<!---\n"
         try:
-            body += file_ocr.extract_text_from_image_object(filename, auto_rotate=AUTOROTATION) # type: ignore
+            languages = "deu+eng"
+            body += ocr_image(filename, languages=languages) # type: ignore
         except TypeError:
             print("Unable to perform OCR on this file.")
         except OSError:
             print(f"Invalid or incomplete file - {filename}")
             return -1
         body += "\n-->\n"
-        img = file_ocr.encode_image_base64(filename, datatype)
+        img = encode_image_file(filename, datatype)
         values = set_json_string(title, NOTEBOOK_ID, body, img)
     else:
         response = create_resource(filename)
@@ -301,43 +498,31 @@ def upload(filename): # TODO Fix removal of img_processor
         values = set_json_string(title, NOTEBOOK_ID, body)
         if response["file_extension"] == "pdf":
             if os.path.isfile(filename) and filename.endswith(".pdf"):
-                try:
-                    with open(filename, "rb") as pdf_file:
-                        pdf_reader = pypdf.PdfReader(pdf_file)
-                        if pdf_reader.is_encrypted:
-                            print("The PDF file is encrypted - OCR or Preview not possible")
-                        else:
-                            # Special handling for PDFs
-                            data = bytes(pdf_file.read())
-                            obj_buffer = file_ocr.get_buffer_for_obj_bytes(data)
 
-                            bytes_data = obj_buffer.getvalue()
+                languages = "deu+eng"
+                url = "http://localhost:41184"
+                token = JOPLIN_TOKEN
+                
+                ocr_text, img_data = ocr_pdf_image(filename, languages)
+                encoded_img = encode_image(img_data, "image/png")
+                
+                if ocr_text:
+                    body += "\n<!---\n"
+                    body += ocr_text # type: ignore
+                    body += "\n-->\n"
+                else:
+                    body += ""
 
-                            body += "\n<!---\n"
-                            body += file_ocr.extract_text_from_pdf_object(obj_buffer) # type: ignore
-                            body += "\n-->\n"
+                values = set_json_string(title, NOTEBOOK_ID, body, encoded_img)
 
-                            #obj_buffer = file_ocr.get_buffer_for_obj(pdf_file)
-                            # Read the bytes from the buffer
-                            #bytes_data = obj_buffer.getvalue()
-                            #preview_file = file_ocr._rotate_image_obj(file_ocr.pdf_page_as_image_obj(bytes_data, is_preview=True))
-
-                            # #previewfile = img_processor.PREVIEWFILE
-                            # if not os.path.exists(preview_file):
-                            #     previewfile = img_processor.pdf_page_to_image(filename) # type: ignore
-                            img = file_ocr.encode_image_base64(preview_file, "image/png")
-                            values = set_json_string(title, NOTEBOOK_ID, body, img)
-                except Exception as e:
-                    print(f"ERROR: {e} The PDF file is corrupted or cannot be opened")
-                    return -1
             else:
                 print("The file path is not valid or does not lead to a PDF file")
                 return -1
-
+        else: # so its not a pdf or image etc. what now
+            pass # TODO
 
     headers = {'Content-type': 'application/x-www-form-urlencoded; charset=utf-8'}
     response = requests.post(JOPLIN_SERVER + "/notes" + "?" + JOPLIN_TOKEN, data=values.encode('utf-8'), headers=headers)
-    #response = requests.post(JOPLIN_SERVER + "/notes" + TOKEN, data=values) old without utf-8 therefore no german umlauts like äöü?
 
     if response.status_code == 200:
         if AUTOTAG:
@@ -348,6 +533,8 @@ def upload(filename): # TODO Fix removal of img_processor
             print(moveto_filename)
             if os.path.exists(moveto_filename):
                 print(f"{basefile} exists in moveto dir, not moving!")
+                # new_filepath = rename_file(basefile, OBSERVED_FOLDERS)
+                # print(f"{basefile} exists in moveto dir, not moving! \n File renamed to: {new_filepath}")
             else:
                 try:
                     # Give it a few seconds to release file lock
@@ -360,6 +547,8 @@ def upload(filename): # TODO Fix removal of img_processor
         print("ERROR! NOTE NOT CREATED")
         print("Something went wrong corrupt file or note > max upload file size?")
         return -1
+
+
 
 def apply_tags(text_to_match, note_id):
     """ Rudimentary Tag match using OCR'd text """
@@ -376,22 +565,6 @@ def apply_tags(text_to_match, note_id):
             )
     print(f"Matched {counter} tag(s) for note {note_id}")
     return counter
-
-def watcher(path_to_watch=None):
-    if path_to_watch is None:
-        path_to_watch = str(Path.home())
-    event_handler = MyHandler()
-    print(f"Monitoring directory: {path_to_watch}")
-    observer = Observer()
-    observer.schedule(event_handler, path=path_to_watch, recursive=False)
-    observer.start()
-
-    try:
-        while True:
-            time.sleep(1)
-    except KeyboardInterrupt:
-        observer.stop()
-    observer.join()
 
 
 
@@ -423,23 +596,6 @@ def run_mode(mode, tag, exclude_tags):
     return -1
 
 
-def __full_run(tag, exclude_tags):
-    print("Starting OCR for tag {}.".format(tag))
-    tag_id = Joplin.find_tag_id_by_title(tag)
-    if tag_id is None:
-        print("Tag not found or specified")
-        return -1
-    return Joplin.perform_on_tagged_note_ids(__perform_ocr_for_note, tag_id, exclude_tags, tag)
-
-
-def __observ_folder_run(observed_folders): # TODO: add support for multiple observed folders
-    print(f"Observing folders {observed_folders}.")
-    watcher(observed_folders)
-    # tag_id = Joplin.find_tag_id_by_title(tag)
-    # if tag_id is None:
-    #     print("Tag not found or specified")
-    #     return -1
-    # return Joplin.perform_on_tagged_note_ids(__perform_ocr_for_note, tag_id, exclude_tags, tag)
 
 
 
@@ -492,13 +648,55 @@ def __is_created_by_rest_uploader(note):
     #has_attachment = len(Joplin.get_note_resources(note.id)) > 0
     return uploaded_from & filename_exists & comment_start & comment_end & markup #& has_attachment
 
-
 def __perform_ocr_for_note(note_id):
     note = Joplin.get_note_by_id(note_id)
     result_tag = __ocr_resources(note)
     Joplin.create_tag(result_tag.value)
     Joplin.tag_note(note_id, result_tag.value)
     return result_tag
+
+
+def __ocr_resource(resource, create_preview=True):
+    mime_type = resource.mime
+    #full_path = Joplin.save_resource_to_file(resource)
+    full_path = Joplin._get_resource_obj(resource)
+    obj_buffer = file_ocr.get_buffer_for_obj(full_path)
+    # Read the bytes from the buffer
+    bytes_data = obj_buffer.getvalue()
+
+    try:
+        if mime_type[:5] == "image":
+            result = file_ocr.extract_text_from_image_object(obj_buffer, auto_rotate=AUTOROTATION, language=LANGUAGE)
+            if result is None:
+                return OcrResult(None)
+            return OcrResult(result.pages, ResourceType.IMAGE)
+        elif mime_type == "application/pdf":
+            ocr_result = file_ocr.extract_text_from_pdf_object(obj_buffer, language=LANGUAGE, auto_rotate=AUTOROTATION)
+            create_preview = True
+            if ocr_result is None:
+                return OcrResult(None, success=False)
+            if create_preview:
+                # preview_file = file_ocr._rotate_image(file_ocr.pdf_page_as_image(full_path, is_preview=True))
+                # preview_file = file_ocr._scale_image_object(file_ocr._rotate_image_obj(file_ocr.pdf_obj_page_as_image(bytes_data, is_preview=True)))
+                preview_file = file_ocr._rotate_image_obj(file_ocr.pdf_page_as_image_obj(bytes_data, is_preview=True))
+                # TODO convert
+                return OcrResult(ocr_result.pages, ResourceType.PDF, preview_file)
+            else:
+                return OcrResult(ocr_result.pages, ResourceType.PDF)
+    except (TypeError, OSError) as e:
+        logging.error(f'Error while OCR: {e.args}')
+        return OcrResult(None, success=False)
+    finally:
+        try:
+            #os.remove(full_path)
+            logging.info('finish one')
+        except PermissionError as e:
+            print("Permission Error: " + str(e))
+            print("File: " + str(resource.title))
+            return OcrResult(None, success=False)
+        except TypeError:
+            # obj in ram will be deleted by auto gc
+            pass
 
 
 def __ocr_resources(note):
@@ -546,6 +744,7 @@ def __ocr_resources(note):
         return ResultTag.OCR_SKIPPED
 
 
+
 def __add_preview(note, title, data):
     res_id = Joplin.save_preview_image_object_as_resource(note.id, data.preview_file, title)
     if note.markup_language == 1:
@@ -555,58 +754,53 @@ def __add_preview(note, title, data):
     return preview_file_link
 
 
-class ResourceType(Enum):
-    PDF = "pdf"
-    IMAGE = "image"
-
-
-class OcrResult:
-    def __init__(self, pages, input_resource_type=ResourceType.IMAGE, preview_file=None, success=True):
-        self.pages = pages
-        self.input_resource_type = input_resource_type
-        self.preview_file = preview_file
-        self.success = success
 
 
 
-def __ocr_resource(resource, create_preview=True):
-    mime_type = resource.mime
-    #full_path = Joplin.save_resource_to_file(resource)
-    full_path = Joplin._get_resource_obj(resource)
-    obj_buffer = file_ocr.get_buffer_for_obj(full_path)
-    # Read the bytes from the buffer
-    bytes_data = obj_buffer.getvalue()
+
+
+
+
+
+
+
+
+
+def watcher(path_to_watch=None):
+    if path_to_watch is None:
+        path_to_watch = str(Path.home())
+    event_handler = DirectoryFileSystemHandler()
+    print(f"Monitoring directory: {path_to_watch}")
+    observer = Observer()
+    observer.schedule(event_handler, path=path_to_watch, recursive=False)
+    observer.start()
 
     try:
-        if mime_type[:5] == "image":
-            result = file_ocr.extract_text_from_image_object(obj_buffer, auto_rotate=AUTOROTATION, language=LANGUAGE)
-            if result is None:
-                return OcrResult(None)
-            return OcrResult(result.pages, ResourceType.IMAGE)
-        elif mime_type == "application/pdf":
-            ocr_result = file_ocr.extract_text_from_pdf_object(obj_buffer, language=LANGUAGE, auto_rotate=AUTOROTATION)
-            create_preview = True
-            if ocr_result is None:
-                return OcrResult(None, success=False)
-            if create_preview:
-                # preview_file = file_ocr._rotate_image(file_ocr.pdf_page_as_image(full_path, is_preview=True))
-                # preview_file = file_ocr._scale_image_object(file_ocr._rotate_image_obj(file_ocr.pdf_obj_page_as_image(bytes_data, is_preview=True)))
-                preview_file = file_ocr._rotate_image_obj(file_ocr.pdf_page_as_image_obj(bytes_data, is_preview=True))
-                # TODO convert
-                return OcrResult(ocr_result.pages, ResourceType.PDF, preview_file)
-            else:
-                return OcrResult(ocr_result.pages, ResourceType.PDF)
-    except (TypeError, OSError) as e:
-        logging.error(f'Error while OCR: {e.args}')
-        return OcrResult(None, success=False)
-    finally:
-        try:
-            #os.remove(full_path)
-            logging.info('finish one')
-        except PermissionError as e:
-            print("Permission Error: " + str(e))
-            print("File: " + str(resource.title))
-            return OcrResult(None, success=False)
-        except TypeError:
-            # obj in ram will be deleted by auto gc
-            pass
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        observer.stop()
+    observer.join()
+
+def __observ_folder_run(observed_folders): # TODO: add support for multiple observed folders
+    print(f"Observing folders {observed_folders}.")
+    watcher(observed_folders)
+
+
+def __full_run(tag, exclude_tags):
+    print("Starting OCR for tag {}.".format(tag))
+    tag_id = Joplin.find_tag_id_by_title(tag)
+    if tag_id is None:
+        print("Tag not found or specified")
+        return -1
+    return Joplin.perform_on_tagged_note_ids(__perform_ocr_for_note, tag_id, exclude_tags, tag)
+
+def mainloop():
+    
+    print("is running")
+    __observ_folder_run(OBSERVED_FOLDERS)
+    print("was running")
+
+
+if __name__ == "__main__":
+    mainloop()

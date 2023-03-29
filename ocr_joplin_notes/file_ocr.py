@@ -6,12 +6,14 @@ import cv2
 import numpy as np
 import io
 
-import pypdf
-from pypdf.errors import PdfReadError
+#import pypdf
+#from pypdf.errors import PdfReadError
+
 from PIL import Image
 from pdf2image import convert_from_path, convert_from_bytes
-from pytesseract import image_to_string, TesseractError, image_to_osd, Output
+import pikepdf
 
+from pytesseract import image_to_string, TesseractError, image_to_osd, Output
 
 from nltk import wordpunct_tokenize
 from nltk.corpus import stopwords
@@ -41,8 +43,8 @@ class FileOcrResult:
 
 def __get_pdf_file_reader(file):
     try:
-        return pypdf.PdfReader(file, strict=False)
-    except PdfReadError as e:
+        return pikepdf.Pdf(file, strict=False)
+    except pikepdf.PdfError as e:
         logging.warning(f"Error reading PDF: {str(e)}")
         return None
     except ValueError as e:
@@ -163,21 +165,6 @@ def encode_image_base64(filename, datatype):
     return img
 
 
-def is_pdf_valid(self, filename):
-    if os.path.isfile(filename) and filename.endswith(".pdf"):
-        try:
-            with open(filename, "rb") as pdf_file:
-                pdf_reader = pypdf.PdfFileReader(pdf_file)
-                if pdf_reader.isEncrypted:
-                    print("The PDF file is encrypted")
-                else:
-                    print("The PDF file is valid and can be opened")
-        except:
-            print("The PDF file is corrupted or cannot be opened")
-    else:
-        print("The file path is not valid or does not lead to a PDF file")
-        
-
 def _scale_image(image_path, max_resolution=2048):
     # Load the image
     img = cv2.imread(image_path)
@@ -282,12 +269,6 @@ def _rotate_image_obj(image_obj):
 
 
 def _rotate_image(filename):
-    """
-     Tries to deskew the image; will not rotate it more than 90 degrees
-    :param filename:
-    :return: rotated file
-    """
-
     # Load the image
     img = cv2.imread(filename)
     imgOrientation = img.copy()
@@ -392,45 +373,6 @@ def extract_text_from_pdf_object(pdf_object, language="deu+eng", auto_rotate=Fal
     return FileOcrResult(text)
 
 
-def extract_text_from_pdf(filename, language="deu+eng", auto_rotate=False):
-    with open(filename, "rb") as file:
-        pdf_reader = __get_pdf_file_reader(file)
-        if pdf_reader is None:
-            return None
-        if pdf_reader.is_encrypted:
-            print('    --NOTICE: This file is encrypted and cannot be read by Joplin OCR\n')
-            return None
-        text = list()
-        preview_file = None
-        _pages_num = len(pdf_reader.pages)
-        print(f"Pages: {_pages_num}")
-        for i, elem in enumerate(pdf_reader.pages): #len(pdf_reader.pages):#range(len(pdf_reader.pages)):
-            page = pdf_reader.pages[i]
-            if page == elem:
-                print("I knew it..")
-
-            extracted_image = pdf_page_as_image(filename, page_num=i)
-            # TODO auto_rotate=False ?? 
-            extracted_text_list = extract_text_from_image(extracted_image,
-                                                          language=language,
-                                                           auto_rotate=auto_rotate)
-            os.remove(extracted_image)
-            if extracted_text_list is not None:
-                extracted_text = "".join(extracted_text_list.pages)
-                print(f"Page {i + 1} of {len(pdf_reader.pages)} processed successfully.")
-            else:
-                extracted_text = ""
-                print(f"Page {i + 1} of {len(pdf_reader.pages)} processed with no text recognized.")
-            embedded_text = "" + elem.extract_text()
-            if len(embedded_text) > len(extracted_text):
-                selected_text = embedded_text
-            else:
-                selected_text = extracted_text
-            selected_text = selected_text.strip()
-            # 10 or fewer characters is probably just garbage
-            if len(selected_text) > 10:
-                text.extend([selected_text])
-        return FileOcrResult(text)
 
 def language_name(code):
     try:
