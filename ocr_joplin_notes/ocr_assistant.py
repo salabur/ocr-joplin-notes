@@ -96,6 +96,15 @@ from pytesseract import Output, image_to_osd
 # DEBUGGING
 # from .file_ocr import FileOcr
 
+import os
+import hashlib
+import datetime
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, ForeignKey
+from sqlalchemy.orm import relationship, backref, sessionmaker
+from sqlalchemy.ext.declarative import declarative_base
+
+Base = declarative_base()
+
 
 try:
     from ocr_joplin_notes import file_ocr
@@ -658,7 +667,6 @@ def __perform_ocr_for_note(note_id):
 
 def __ocr_resource(resource, create_preview=True):
     mime_type = resource.mime
-    #full_path = Joplin.save_resource_to_file(resource)
     full_path = Joplin._get_resource_obj(resource)
     obj_buffer = file_ocr.get_buffer_for_obj(full_path)
     # Read the bytes from the buffer
@@ -676,8 +684,6 @@ def __ocr_resource(resource, create_preview=True):
             if ocr_result is None:
                 return OcrResult(None, success=False)
             if create_preview:
-                # preview_file = file_ocr._rotate_image(file_ocr.pdf_page_as_image(full_path, is_preview=True))
-                # preview_file = file_ocr._scale_image_object(file_ocr._rotate_image_obj(file_ocr.pdf_obj_page_as_image(bytes_data, is_preview=True)))
                 preview_file = file_ocr._rotate_image_obj(file_ocr.pdf_page_as_image_obj(bytes_data, is_preview=True))
                 # TODO convert
                 return OcrResult(ocr_result.pages, ResourceType.PDF, preview_file)
@@ -755,10 +761,200 @@ def __add_preview(note, title, data):
 
 
 
+# DB functions
 
 
 
+class FileInfo(Base):
+    __tablename__ = 'file_info'
 
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    file_path = Column(String, nullable=False, unique=True)
+    sha3_265 = Column(String)
+    size_bits = Column(Integer)
+    datetime_added = Column(DateTime, default=datetime.datetime.utcnow)
+    datetime_changed = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+    ocr_status = Column(String, default='')
+
+
+class NoteInfo(Base):
+    __tablename__ = 'note_info'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    datetime_created = Column(DateTime, default=datetime.datetime.utcnow)
+    datetime_changed = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+    note_id = Column(String(64), unique=True)
+    note_datetime_created = Column(DateTime, default=datetime.datetime.utcnow)
+    note_datetime_changed = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+    note_title = Column(String)
+    resources = relationship('ResourceInfo', backref='note_info', lazy=True)
+    file_id = Column(Integer, ForeignKey('file_info.id'))
+
+class ResourceInfo(Base):
+    __tablename__ = 'resource_info'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    datetime_created = Column(DateTime, default=datetime.datetime.utcnow)
+    datetime_changed = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+    resource_datetime_created = Column(DateTime, default=datetime.datetime.utcnow)
+    resource_datetime_changed = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+    resource_path = Column(String)
+    note_id = Column(Integer, ForeignKey('note_info.id'))
+
+class Database:
+    def __init__(self, db_uri):
+        self.engine = create_engine(db_uri)
+        Base.metadata.create_all(self.engine)
+        self.Session = sessionmaker(bind=self.engine)
+
+    def add_file_info(self, file_path):
+        session = self.Session()
+
+        # Check if file already exists in database
+        file_info = session.query(FileInfo).filter_by(file_path=file_path).first()
+
+        if file_info is not None:
+            session.close()
+            return
+
+        # Get file information
+        file_size_bits = os.path.getsize(file_path) * 8
+        with open(file_path, 'rb') as f:
+            file_hash = hashlib.sha3_256(f.read()).hexdigest()
+
+        # Add file information to database
+        file_info = FileInfo(
+            file_path=file_path,
+            sha3_265=file_hash,
+            size_bits=file_size_bits,
+            ocr_status='',
+        )
+        session.add(file_info)
+        session.commit()
+        session.close()
+
+    def add_file_info_by_sha3_256(self, sha3_256, file_size_bits):
+        session = self.Session()
+
+        # Check if file already exists in database
+        file_info = session.query(FileInfo).filter_by(sha3_265=sha3_256).first()
+
+        if file_info is not None:
+            session.close()
+            return
+
+        # Add file information to database
+        file_info = FileInfo(
+            sha3_265=sha3_256,
+            size_bits=file_size_bits,
+            ocr_status='',
+        )
+        session.add(file_info)
+        session.commit()
+        session.close()
+
+
+    def get_file_info(self, file_path):
+        session = self.Session()
+        file_info = session.query(FileInfo).filter_by(file_path=file_path).first()
+        session.close()
+        return file_info
+
+    def get_file_info_by_sha3_256(self, sha3_256):
+        session = self.Session()
+        file_info = session.query(FileInfo).filter_by(sha3_265=sha3_256).first()
+        session.close()
+        return file_info
+
+
+    def update_ocr_status(self, file_path, ocr_status):
+        session = self.Session()
+        file_info = session.query(FileInfo).filter_by(file_path=file_path).first()
+        file_info.ocr_status = ocr_status
+        session.commit()
+        session.close()
+
+    def update_file_info(self, file_path):
+        session = self.Session()
+
+        # Get file information
+        with open(file_path, 'rb') as f:
+            file_hash = hashlib.sha3_256(f.read()).hexdigest()
+
+        # Update file information in database
+        file_info = session.query(FileInfo).filter_by(file_path=file_path).first()
+        file_info.sha3_265 = file_hash
+        file_info.size_bits = os.path.getsize(file_path) * 8
+        file_info.datetime_changed = datetime.datetime.utcnow()
+        session.commit()
+        session.close()
+
+
+    def add_note_info(self, note_id, note_title, file_path):
+        session = self.Session()
+
+        # Check if note already exists in database
+        note_info = session.query(NoteInfo).filter_by(note_id=note_id).first()
+
+        if note_info is not None:
+            session.close()
+            return
+
+        # Get file information
+        file_info = session.query(FileInfo).filter_by(file_path=file_path).first()
+
+        # Add note information to database
+        note_info = NoteInfo(
+            note_id=note_id,
+            note_title=note_title,
+            file_id=file_info.id,
+        )
+        session.add(note_info)
+        session.commit()
+        session.close()
+
+    def add_resource_info(self, note_id, resource_path):
+        session = self.Session()
+
+        # Check if resource already exists in database
+        resource_info = session.query(ResourceInfo).filter_by(resource_path=resource_path).first()
+
+        if resource_info is not None:
+            session.close()
+            return
+
+        # Add resource information to database
+        resource_info = ResourceInfo(
+            resource_path=resource_path,
+            note_id=note_id,
+        )
+        session.add(resource_info)
+        session.commit()
+        session.close()
+
+    def get_note_info(self, note_id):
+        session = self.Session()
+        note_info = session.query(NoteInfo).filter_by(note_id=note_id).first()
+        session.close()
+        return note_info
+
+    def update_note_info(self, note_id, note_title):
+        session = self.Session()
+
+        # Update note information in database
+        note_info = session.query(NoteInfo).filter_by(note_id=note_id).first()
+        note_info.note_title = note_title
+        session.commit()
+        session.close()
+
+    def update_resource_info(self, resource_path):
+        session = self.Session()
+
+        # Update resource information in database
+        resource_info = session.query(ResourceInfo).filter_by(resource_path=resource_path).first()
+        resource_info.resource_datetime_changed = datetime.datetime.utcnow()
+        session.commit()
+        session.close()
 
 
 
