@@ -103,7 +103,8 @@ from sqlalchemy import create_engine, Column, Integer, String, DateTime, Foreign
 from sqlalchemy.orm import relationship, backref, sessionmaker
 from sqlalchemy.ext.declarative import declarative_base
 
-
+import threading
+import queue
 
 Base = declarative_base()
 
@@ -165,17 +166,19 @@ class DirectoryFileSystemHandler(FileSystemEventHandler):
                 print(f"Filesize = {filesize}. Maybe too big for Joplin, skipping upload")
                 return False
             else:
-                i = 1
-                max_retries = 5
-                while i <= max_retries:
-                    if i > 1:
-                        print(f"Retrying file upload {i} of {max_retries}...")
-                    if upload(path) < 0:
-                        time.sleep(5)
-                    else:
-                        return True
-                print(f"Tried {max_retries} times but failed to upload file {path}")
-                return False
+                shared_queue.put(('upload', f'{path}'))
+                # return True
+                # i = 1
+                # max_retries = 5
+                # while i <= max_retries:
+                #     if i > 1:
+                #         print(f"Retrying file upload {i} of {max_retries}...")
+                #     if upload(path) < 0:
+                #         time.sleep(5)
+                #     else:
+                #         return True
+                # print(f"Tried {max_retries} times but failed to upload file {path}")
+                # return False
         else:
             print("Detected temp file. Temp files are ignored.")
 
@@ -911,6 +914,13 @@ def pdf_page_as_image_obj(bytes, page_num=0, is_preview=False):
 
 
 
+def upload_from_queue(queue): # 
+    """ Get the default Notebook ID and process the passed in file"""
+    basefile = os.path.basename(filename)
+    filename = 
+    upload(filename)
+
+
 def upload(filename): # 
     """ Get the default Notebook ID and process the passed in file"""
     basefile = os.path.basename(filename)
@@ -1468,15 +1478,25 @@ def watcher(path_to_watch=None):
         observer.stop()
     observer.join()
 
-def second_function_example():
+def scanner_run():
+    print('scanner is running')
     do_something_important()
 
 def do_something_important():
     x = 1
     for i in range(64):
         x+=1
+    print('counted do_something_important')
 
+def threading_task_manager():
+    upload_thread = threading.Thread(target=upload_from_queue, args=(shared_queue,))
+    # upload_thread = threading.Thread(target=scanner_run, args=(shared_queue,))
 
+    # create one thread for scanning of not jet OCRed or files (ressources) in notes 
+    # and a second one to ocr the found note
+
+    upload_thread.start()
+    upload_thread.join()
 
 def __observ_folder_run(observed_folders): # TODO: add support for multiple observed folders
     print(f"Observing folders {observed_folders}.")
@@ -1509,4 +1529,18 @@ def mainloop():
 
 
 if __name__ == "__main__":
+    global shared_queue
+    shared_queue = queue.Queue()
+
+    watcher_thread = threading.Thread(target=watcher, args=(None, shared_queue))
+    threading_task_manager_thread = threading.Thread(target=threading_task_manager, args=(shared_queue,))
+
+    
+    watcher_thread.start()
+    threading_task_manager.start()
+
+    watcher_thread.join()
+    threading_task_manager_thread.join()
+
+    
     mainloop()
