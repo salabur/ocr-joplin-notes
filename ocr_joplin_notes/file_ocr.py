@@ -241,7 +241,6 @@ def _rotate_image_obj(image_obj):
         print(type(image_obj))
         return None    
 
-
     # Convert the image bytes to a PIL image object
     img_pil = Image.open(io.BytesIO(image_obj))
 

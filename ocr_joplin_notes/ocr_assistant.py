@@ -103,16 +103,18 @@ from sqlalchemy import create_engine, Column, Integer, String, DateTime, Foreign
 from sqlalchemy.orm import relationship, backref, sessionmaker
 from sqlalchemy.ext.declarative import declarative_base
 
+
+
 Base = declarative_base()
 
 
 try:
-    from ocr_joplin_notes import file_ocr
+    #from ocr_joplin_notes import file_ocr
     from ocr_joplin_notes import joplin_data_wrapper
 except ModuleNotFoundError as e:
     program_dir = (os.path.abspath(os.path.join(os.path.dirname(__file__))))
     sys.path.append(program_dir)
-    import file_ocr
+    #import file_ocr
     import joplin_data_wrapper
     logging.warning(f"Error Module Not Found - {e.args}")
     #print(f"Module Not Found: {e.args}")
@@ -154,7 +156,6 @@ else:
 
 
 class DirectoryFileSystemHandler(FileSystemEventHandler):
-
 
     def _event_handler(self, path):
         filename, ext = os.path.splitext(path)
@@ -348,6 +349,118 @@ def get_resource(resource_id):
     response = requests.get(apitext)
     return response
 
+def get_files_sha3_256(file_name, file_path = OBSERVED_FOLDERS):
+    if is_file_path(file_name):
+        file_full_path = file_name
+    else:
+        file_full_path = os.path.join(file_path, file_name)
+    # Get file information
+    with open(file_full_path, 'rb') as f:
+        file_hash = hashlib.sha3_256(f.read()).hexdigest()
+    return file_hash
+
+
+def get_buffer_sha3_256(file_buffer):
+    # test_file = open(filename, 'rb')
+    # test_bytes = io.BytesIO(test_file.read())
+    # second_sha = hashlib.sha3_256(test_bytes.getvalue()).hexdigest()
+
+    sha = hashlib.sha3_256(file_buffer.getvalue()).hexdigest()
+
+    #file_hash = hashlib.sha3_256(f.read()).hexdigest()
+    return sha
+
+
+
+def _rotate_image_obj(image_obj):
+    if isinstance(image_obj, io.BytesIO):
+        image_obj = image_obj.getvalue()
+    elif isinstance(image_obj, str):
+        if os.path.isfile(image_obj) and imghdr.what(image_obj):
+            image_obj = cv2.imread(image_obj)
+        else:
+            return None    
+    else:
+        print("No valid image object or file does not exist or is not an image")
+        print(type(image_obj))
+        return None    
+
+    # Convert the image bytes to a PIL image object
+    img_pil = Image.open(io.BytesIO(image_obj))
+
+    # Convert the PIL image object to a NumPy array
+    img_array = np.array(img_pil)
+
+    # Convert the NumPy array to a BGR color image
+    if img_array.ndim == 2:
+        img = cv2.cvtColor(img_array, cv2.COLOR_GRAY2BGR)
+    else:
+        img = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
+
+    # Detect the orientation of the image using Tesseract OCR
+    results = image_to_osd(img, output_type=Output.DICT)
+
+    # Rotate the image to the correct orientation
+    img_rotated = imutils.rotate_bound(img, angle=results["rotate"])
+
+    # Encode the rotated image as a PNG image in memory
+    _, img_encoded = cv2.imencode('.png', img_rotated)
+
+    return img_encoded
+
+
+
+
+def _rotate_image(filename):
+    # Load the image
+    img = cv2.imread(filename)
+    imgOrientation = img.copy()
+
+    rgb = cv2.cvtColor(imgOrientation, cv2.COLOR_BGR2RGB)
+
+    results = image_to_osd(rgb, output_type=Output.DICT)
+    # display the orientation information
+    print("[INFO] detected orientation: {}".format(
+        results["orientation"]))
+    print("[INFO] rotate by {} degrees to correct".format(
+        results["rotate"]))
+    #print("[INFO] detected script: {}".format(results["script"]))
+
+    img_rotated = imutils.rotate_bound(img, angle=results["rotate"])
+
+    temp_file = f"{tempfile.gettempdir()}/{uuid4()}.png"
+    cv2.imwrite(temp_file, img_rotated)
+    return temp_file
+
+
+def get_buffer_for_obj(obj):
+        # Create a BytesIO object
+    buffer = io.BytesIO()
+
+    buffer.write(obj.content)
+    # Seek to the beginning of the object
+    buffer.seek(0)
+
+    return buffer
+
+
+
+def get_buffer_for_obj_bytes(obj):
+        # Create a BytesIO object
+    buffer = io.BytesIO()
+
+    buffer.write(obj)
+    # Seek to the beginning of the object
+    buffer.seek(0)
+
+    return buffer
+
+def is_file_path(input_str):
+    """
+    Returns True if the input string is a full file path, False if it is just a file name.
+    """
+    return os.path.sep in input_str
+
 def ocr_pdf_image(file_path, languages):
     with open(file_path, "rb") as file:
         stream = io.BytesIO(file.read())
@@ -406,6 +519,175 @@ def ocr_image(file_path, languages):
 
 #     return img
 
+def extract_text_from_pdf_object(pdf_object, language="deu+eng", auto_rotate=False):
+
+    # try:
+    #     pdf_object = open(pdf_object, "rb")
+    # except Exception as e:
+    #     print(f"{e.args}")
+
+    pdf_reader = __get_pdf_file_reader(pdf_object)
+
+    # pdf_data = pdf_object
+    # try:
+        # Read the bytes from the buffer
+    pdf_data = pdf_object.getvalue()
+    # except:
+    #     try:
+    #         obj_buffer = file_ocr.get_buffer_for_obj(full_path)
+    #         # Read the bytes from the buffer
+    #         pdf_data = obj_buffer.getvalue()
+    #     except:
+    #         pass
+
+    if pdf_reader is None:
+        return None
+    if pdf_reader.is_encrypted:
+        print('    --NOTICE: This file is encrypted and cannot be read by Joplin OCR\n')
+        return None
+    text = list()
+    preview_file = None
+    _pages_num = len(pdf_reader.pages)
+    print(f"Pages: {_pages_num}")
+    for i, x in enumerate(pdf_reader.pages):
+        #print(f"i={i} x={x}")
+        page = pdf_reader.pages[i]
+        extracted_image_obj = pdf_page_as_image_obj(pdf_data, page_num=i)
+        # TODO auto_rotate=False ?? 
+        extracted_text_list = extract_text_from_image_object(extracted_image_obj,
+                                                        language=language,
+                                                        auto_rotate=auto_rotate)
+        # close the buffer
+        #extracted_image_obj.close()
+
+        if extracted_text_list is not None:
+            extracted_text = "".join(extracted_text_list.pages)
+            print(f"Page {i + 1} of {len(pdf_reader.pages)} processed successfully.")
+        else:
+            extracted_text = ""
+            print(f"Page {i + 1} of {len(pdf_reader.pages)} processed with no text recognized.")
+        embedded_text = "" + page.extract_text()
+        if len(embedded_text) > len(extracted_text): # TODO check if one is in the given language(s)
+            selected_text = embedded_text
+        else:
+            selected_text = extracted_text
+        selected_text = selected_text.strip()
+        # 10 or fewer characters is probably just garbage
+        if len(selected_text) > 10:
+            text.extend([selected_text])
+    
+    return FileOcrResult(text)
+
+
+
+def language_name(code):
+    try:
+        # Use langcodes to translate the language code into a language name
+        return langcodes.Language.make(code).language_name()
+    except:
+        return "Unknown"
+    
+def convert_languages_list(languages_list = None):
+    if languages_list:
+        out_list = list()
+        for language in languages_list:
+            _language = language_name(language)
+            if _language:
+                out_list.append(_language)
+    else:
+        return None
+    return out_list
+    
+
+def parse_languages(lang_string):
+    return lang_string.split("+")
+
+
+
+
+def extract_text_from_image_object(image_object, auto_rotate=False, language="eng"):
+    try:
+        #img = __get_image(image_object)
+        # text = image_to_string(img, lang=language)
+
+        #image_object_bytes_data = image_object.getvalue()
+        if isinstance(image_object, io.BytesIO):
+            image_object = image_object.getvalue()
+        elif isinstance(image_object, str):
+            if os.path.isfile(image_object) and imghdr.what(image_object):
+                image_object = cv2.imread(image_object)
+            else:
+                return None    
+        else:
+            print("No valid image object or file does not exist or is not an image")
+            print(type(image_object))
+            return None    
+
+        if auto_rotate:
+            rotated_image = _rotate_image_obj(image_object)
+            if rotated_image is None:
+                return None
+            result = extract_text_from_image_object(rotated_image, auto_rotate=False, language=language)
+            #os.remove(rotated_image)
+            if result is None:
+               return None
+            text = result.pages[0]
+        else:
+            # Convert the image bytes to a NumPy array
+            img_array = np.frombuffer(image_object, dtype=np.uint8)
+
+            # Decode the image array
+            img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+
+            # Convert BGR to RGB
+            rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            text = image_to_string(rgb, lang=language)
+            #text = image_to_string(img, lang=language)
+            #image_object.close()
+            if text is None:
+                return None
+
+        # 10 or fewer characters is probably just garbage
+        if len(text.strip()) > 10:
+            return FileOcrResult([text.strip()])
+        else:
+            return None
+    except TesseractError as e:
+        print(f"TesseractError {e.message}")
+        return None
+
+
+def extract_text_from_image(filename, auto_rotate=False, language="eng"):
+    try:
+        img = __get_image(filename)
+        # text = image_to_string(img, lang=language)
+
+        if auto_rotate:
+            rotated_image = _rotate_image(filename)
+            if rotated_image is None:
+                return None
+            result = extract_text_from_image(rotated_image, auto_rotate=False, language=language)
+            #os.remove(rotated_image)
+            if result is None:
+               return None
+            text = result.pages[0]
+        else:
+            text = image_to_string(img, lang=language)
+            #text = image_to_string(img, lang=language)
+
+            os.remove(filename)
+            if text is None:
+                return None
+
+        # 10 or fewer characters is probably just garbage
+        if len(text.strip()) > 10:
+            return FileOcrResult([text.strip()])
+        else:
+            return None
+    except TesseractError as e:
+        print(f"TesseractError {e.message}")
+        return None
+
 
 def correct_image_obj(img):
     # Convert the PIL Image to a NumPy array for OpenCV
@@ -431,6 +713,68 @@ def correct_image_obj(img):
     return img_rotated_pil
 
 
+def _scale_image(image_path, max_resolution=2048):
+    # Load the image
+    img = cv2.imread(image_path)
+    
+    # Get the original width and height
+    height, width = img.shape[:2]
+    
+    # Check if the image is already smaller than the target resolution
+    if height <= max_resolution and width <= max_resolution:
+        return image_path
+    
+    # Calculate the scale factor to fit within the maximum resolution
+    scale_factor = min(max_resolution / width, max_resolution / height)
+    
+    # Calculate the new dimensions
+    new_width = int(width * scale_factor)
+    new_height = int(height * scale_factor)
+    
+    # Resize the image
+    img = cv2.resize(img, (new_width, new_height), interpolation=cv2.INTER_AREA)
+    
+    # Save the resized image
+    temp_file = f"{tempfile.gettempdir()}/{uuid4()}.png"
+    cv2.imwrite(temp_file, img)
+    return temp_file
+
+
+def __get_image(filename):
+    try:
+        return Image.open(filename)
+    except OSError:
+        print(f"Error reading image: {filename}")
+        return None
+
+#rotate the image with given theta value
+def __rotate(img, theta):
+    rows, cols = img.shape[0], img.shape[1]
+    image_center = (cols/2, rows/2)
+    
+    M = cv2.getRotationMatrix2D(image_center,theta,1)
+
+    abs_cos = abs(M[0,0])
+    abs_sin = abs(M[0,1])
+
+    bound_w = int(rows * abs_sin + cols * abs_cos)
+    bound_h = int(rows * abs_cos + cols * abs_sin)
+
+    M[0, 2] += bound_w/2 - image_center[0]
+    M[1, 2] += bound_h/2 - image_center[1]
+
+    # rotate orignal image to show transformation
+    rotated = cv2.warpAffine(img,M,(bound_w,bound_h),borderValue=(255,255,255))
+    return rotated
+
+
+def __slope(x1, y1, x2, y2):
+    if x1 == x2:
+        return 0
+    slope = (y2-y1)/(x2-x1)
+    theta = np.rad2deg(np.arctan(slope))
+    return theta
+
 
 def encode_image(img, datatype):
     img_bytes = io.BytesIO()
@@ -440,10 +784,40 @@ def encode_image(img, datatype):
     encoded_img = f"data:{datatype};base64,{encoded.decode()}"
     return encoded_img
 
-def encode_image_file(filename, datatype):
-    encoded = base64.b64encode(open(filename, "rb").read())
-    img = f"data:{datatype};base64,{encoded.decode()}"
-    return img
+def encode_file_base64(filename, datatype, file_path = OBSERVED_FOLDERS):
+    if is_file_path(filename):
+        file_full_path = filename
+    else:
+        file_full_path = os.path.join(file_path, filename)
+            
+    encoded = base64.b64encode(open(file_full_path, "rb").read())
+    out = f"data:{datatype};base64,{encoded.decode()}"
+    return out
+
+
+def read_text_note(filename, file_path = OBSERVED_FOLDERS):
+    if is_file_path(filename):
+        file_full_path = filename
+    else:
+        file_full_path = os.path.join(file_path, filename)
+            
+    with open(file_full_path, "r") as myfile:
+        text = myfile.read()
+        print(text)
+    return text
+
+
+def read_csv(filename, file_path = OBSERVED_FOLDERS):
+    if is_file_path(filename):
+        file_full_path = filename
+    else:
+        file_full_path = os.path.join(file_path, filename)
+            
+    return csv.DictReader(open(file_full_path))
+
+
+
+
 
 def rename_file(basefile, filePath=None):
     if filePath is None:
@@ -467,12 +841,87 @@ def rename_file(basefile, filePath=None):
 
     return new_filepath
 
-def upload(filename): # TODO Fix removal of img_processor
+
+
+class FileOcrResult:
+    def __init__(self, pages):
+        self.pages = pages
+
+
+def __get_pdf_file_reader(file):
+    try:
+        return pikepdf.Pdf(file, strict=False)
+    except pikepdf.PdfError as e:
+        logging.warning(f"Error reading PDF: {str(e)}")
+        return None
+    except ValueError as e:
+        logging.warning(f"Error reading PDF - {e.args}")
+        return None
+
+
+def pdf_page_as_image(filename, page_num=0, is_preview=False):
+    if not is_preview:
+        # high dpi and grayscale for the best OCR result
+        pages = convert_from_path(filename,
+                                  dpi=600,
+                                  grayscale=True,
+                                  first_page=page_num+1,
+                                  last_page=page_num+1)
+    else:
+        pages = convert_from_path(filename,
+                            first_page=page_num+1,
+                            last_page=page_num+1)
+    temp_file = f"{tempfile.gettempdir()}/{uuid4()}.png"
+    pages[0].save(temp_file, format="PNG")
+    # pages[page_num].save(temp_file, format="PNG")
+    return temp_file
+
+
+def pdf_page_as_image_obj(bytes, page_num=0, is_preview=False):
+    if not is_preview:
+        # high dpi and grayscale for the best OCR result
+        pages = convert_from_bytes(bytes,
+                                  dpi=600,
+                                  grayscale=True,
+                                  first_page=page_num+1,
+                                  last_page=page_num+1)
+    else:
+        pages = convert_from_bytes(bytes,
+                            first_page=page_num+1,
+                            last_page=page_num+1)
+        
+    # Create a BytesIO object
+    buffer = io.BytesIO()
+
+    pages[0].save(buffer, format="PNG")
+
+    buffer.seek(0)   
+
+    # Read the bytes from the BytesIO object
+    img_bytes = buffer.getvalue()
+
+    return img_bytes
+
+
+
+
+
+
+
+
+
+
+def upload(filename): # 
     """ Get the default Notebook ID and process the passed in file"""
     basefile = os.path.basename(filename)
     title, ext = os.path.splitext(basefile)
     body = f"{basefile} uploaded from {platform.node()}\n"
     datatype = mimetypes.guess_type(filename)[0]
+    db_response = db.add_file_info(basefile) #needs accessible path
+    # file_info = db.get_file_info_by_file(basefile)
+    # print(f'file info - size: {file_info.size_bits} sha:{file_info.sha3_256} name: {file_info.file_name}')
+
+
     if datatype is None:
         # avoid subscript exception if datatype is None
         if ext in (".url", ".lnk"):
@@ -480,27 +929,37 @@ def upload(filename): # TODO Fix removal of img_processor
         else:
             datatype = ""
     if datatype == "text/plain":
-        body += file_ocr.read_text_note(filename)
+        db_response = db.add_file_info(basefile, ocr_status='started')
+        body += read_text_note(filename)
         values = set_json_string(title, NOTEBOOK_ID, body)
+        db_response = db.add_file_info(basefile, ocr_status='ok')
     if datatype == "text/csv":
-        table = file_ocr.read_csv(filename)
+        table = read_csv(filename)
+        db_response = db.add_file_info(basefile, ocr_status='started')
         body += tabulate(table, headers="keys", numalign="right", tablefmt="pipe")
         values = set_json_string(title, NOTEBOOK_ID, body)
+        db_response = db.add_file_info(basefile, ocr_status='ok')
 
     elif datatype[:5] == "image":
 
         body += "\n<!---\n"
         try:
             languages = "deu+eng"
+            db_response = db.add_file_info(basefile, ocr_status='started')
             body += ocr_image(filename, languages=languages) # type: ignore
         except TypeError:
             print("Unable to perform OCR on this file.")
+            db_response = db.add_file_info(basefile, ocr_status='fail')
+
         except OSError:
             print(f"Invalid or incomplete file - {filename}")
+            db_response = db.add_file_info(basefile, ocr_status='fail')
             return -1
         body += "\n-->\n"
-        img = encode_image_file(filename, datatype)
+        img = encode_file_base64(filename, datatype)
         values = set_json_string(title, NOTEBOOK_ID, body, img)
+        db_response = db.add_file_info(basefile, ocr_status='ok')
+
     else:
         response = create_resource(filename)
         body += f"[{basefile}](:/{response['id']})"
@@ -511,7 +970,7 @@ def upload(filename): # TODO Fix removal of img_processor
                 languages = "deu+eng"
                 url = "http://localhost:41184"
                 token = JOPLIN_TOKEN
-                
+                db_response = db.add_file_info(basefile, ocr_status='started')
                 ocr_text, img_data = ocr_pdf_image(filename, languages)
                 encoded_img = encode_image(img_data, "image/png")
                 
@@ -519,15 +978,19 @@ def upload(filename): # TODO Fix removal of img_processor
                     body += "\n<!---\n"
                     body += ocr_text # type: ignore
                     body += "\n-->\n"
+                    db_response = db.add_file_info(basefile, ocr_status='ok')
                 else:
                     body += ""
+                    db_response = db.add_file_info(basefile, ocr_status='fail')
 
                 values = set_json_string(title, NOTEBOOK_ID, body, encoded_img)
 
             else:
                 print("The file path is not valid or does not lead to a PDF file")
+                db_response = db.add_file_info(basefile, ocr_status='fail')
                 return -1
         else: # so its not a pdf or image etc. what now
+            print("The file extension is not supported") # "should never happen" .D
             pass # TODO
 
     headers = {'Content-type': 'application/x-www-form-urlencoded; charset=utf-8'}
@@ -600,6 +1063,9 @@ def run_mode(mode, tag, exclude_tags):
     elif mode == "OBSERV_FOLDER":
         set_dry_run(False)
         return __observ_folder_run(OBSERVED_FOLDERS)
+    elif mode == "OBSERV_FOLDER_AND_SCAN":
+        set_dry_run(False)
+        return __observ_folder_and_scan_run(OBSERVED_FOLDERS)
     else:
         print(f"Mode {mode} not supported")
     return -1
@@ -668,7 +1134,7 @@ def __perform_ocr_for_note(note_id):
 def __ocr_resource(resource, create_preview=True):
     mime_type = resource.mime
     full_path = Joplin._get_resource_obj(resource)
-    obj_buffer = file_ocr.get_buffer_for_obj(full_path)
+    obj_buffer = get_buffer_for_obj(full_path)
     # Read the bytes from the buffer
     bytes_data = obj_buffer.getvalue()
 
@@ -679,12 +1145,12 @@ def __ocr_resource(resource, create_preview=True):
                 return OcrResult(None)
             return OcrResult(result.pages, ResourceType.IMAGE)
         elif mime_type == "application/pdf":
-            ocr_result = file_ocr.extract_text_from_pdf_object(obj_buffer, language=LANGUAGE, auto_rotate=AUTOROTATION)
+            ocr_result = extract_text_from_pdf_object(obj_buffer, language=LANGUAGE, auto_rotate=AUTOROTATION)
             create_preview = True
             if ocr_result is None:
                 return OcrResult(None, success=False)
             if create_preview:
-                preview_file = file_ocr._rotate_image_obj(file_ocr.pdf_page_as_image_obj(bytes_data, is_preview=True))
+                preview_file = _rotate_image_obj(file_ocr.pdf_page_as_image_obj(bytes_data, is_preview=True))
                 # TODO convert
                 return OcrResult(ocr_result.pages, ResourceType.PDF, preview_file)
             else:
@@ -763,14 +1229,12 @@ def __add_preview(note, title, data):
 
 # DB functions
 
-
-
 class FileInfo(Base):
     __tablename__ = 'file_info'
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    file_path = Column(String, nullable=False, unique=True)
-    sha3_265 = Column(String)
+    file_name = Column(String, nullable=False, unique=True)
+    sha3_256 = Column(String)
     size_bits = Column(Integer)
     datetime_added = Column(DateTime, default=datetime.datetime.utcnow)
     datetime_changed = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
@@ -807,37 +1271,43 @@ class Database:
         Base.metadata.create_all(self.engine)
         self.Session = sessionmaker(bind=self.engine)
 
-    def add_file_info(self, file_path):
+    def add_file_info(self, file_name, file_path = OBSERVED_FOLDERS, ocr_status=''):
+        if is_file_path(file_name):
+            file_full_path = file_name
+        else:
+            file_full_path = os.path.join(file_path, file_name)
+
+        with open(file_full_path, 'rb') as f:
+            file_hash = hashlib.sha3_256(f.read()).hexdigest()
         session = self.Session()
 
         # Check if file already exists in database
-        file_info = session.query(FileInfo).filter_by(file_path=file_path).first()
+        file_info = session.query(FileInfo).filter_by(sha3_256=file_hash).first()
 
         if file_info is not None:
             session.close()
-            return
+            return False
 
         # Get file information
-        file_size_bits = os.path.getsize(file_path) * 8
-        with open(file_path, 'rb') as f:
-            file_hash = hashlib.sha3_256(f.read()).hexdigest()
+        file_size_bits = os.path.getsize(file_full_path) * 8
 
         # Add file information to database
         file_info = FileInfo(
-            file_path=file_path,
-            sha3_265=file_hash,
+            file_name=file_name,
+            sha3_256=file_hash,
             size_bits=file_size_bits,
-            ocr_status='',
+            ocr_status=ocr_status,
         )
         session.add(file_info)
         session.commit()
         session.close()
+        return True
 
-    def add_file_info_by_sha3_256(self, sha3_256, file_size_bits):
+    def add_file_info_by_sha3_256(self, sha3_256, file_size_bits, ocr_status=''):
         session = self.Session()
 
         # Check if file already exists in database
-        file_info = session.query(FileInfo).filter_by(sha3_265=sha3_256).first()
+        file_info = session.query(FileInfo).filter_by(sha3_256=sha3_256).first()
 
         if file_info is not None:
             session.close()
@@ -845,52 +1315,73 @@ class Database:
 
         # Add file information to database
         file_info = FileInfo(
-            sha3_265=sha3_256,
+            sha3_256=sha3_256,
             size_bits=file_size_bits,
-            ocr_status='',
+            ocr_status=ocr_status,
         )
         session.add(file_info)
         session.commit()
         session.close()
 
 
-    def get_file_info(self, file_path):
-        session = self.Session()
-        file_info = session.query(FileInfo).filter_by(file_path=file_path).first()
-        session.close()
+    def get_files_sha3_256(self, file_name, file_path = OBSERVED_FOLDERS):
+        if is_file_path(file_name):
+            file_full_path = file_name
+        else:
+            file_full_path = os.path.join(file_path, file_name)
+            
+        # Get file information
+        with open(file_full_path, 'rb') as f:
+            file_hash = hashlib.sha3_256(f.read()).hexdigest()
+        return file_hash
+
+    def get_file_info_by_file(self, file_name, file_path = OBSERVED_FOLDERS):
+        if is_file_path(file_name):
+            file_full_path = file_name
+        else:
+            file_full_path = os.path.join(file_path, file_name)
+            
+        sha = self.get_files_sha3_256(file_name, file_path)
+        file_info = self.get_file_info_by_sha3_256(sha)
         return file_info
 
     def get_file_info_by_sha3_256(self, sha3_256):
         session = self.Session()
-        file_info = session.query(FileInfo).filter_by(sha3_265=sha3_256).first()
+        file_info = session.query(FileInfo).filter_by(sha3_256=sha3_256).first()
         session.close()
         return file_info
 
 
-    def update_ocr_status(self, file_path, ocr_status):
+    def update_ocr_status(self, sha3_256, ocr_status):
         session = self.Session()
-        file_info = session.query(FileInfo).filter_by(file_path=file_path).first()
+        file_info = session.query(FileInfo).filter_by(sha3_256=sha3_256).first()
         file_info.ocr_status = ocr_status
         session.commit()
         session.close()
 
-    def update_file_info(self, file_path):
+    def update_file_info(self, file_name, file_path = OBSERVED_FOLDERS):
+        if is_file_path(file_name):
+            file_full_path = file_name
+        else:
+            file_full_path = os.path.join(file_path, file_name)
+            
         session = self.Session()
 
         # Get file information
-        with open(file_path, 'rb') as f:
+        with open(file_full_path, 'rb') as f:
             file_hash = hashlib.sha3_256(f.read()).hexdigest()
 
         # Update file information in database
-        file_info = session.query(FileInfo).filter_by(file_path=file_path).first()
-        file_info.sha3_265 = file_hash
-        file_info.size_bits = os.path.getsize(file_path) * 8
+        file_info = session.query(FileInfo).filter_by(sha3_256=file_hash).first()
+        file_info.sha3_256 = file_hash  # may needs to be removed as it will never be updated
+        file_info.file_name = file_name        
+        file_info.size_bits = os.path.getsize(file_full_path) * 8
         file_info.datetime_changed = datetime.datetime.utcnow()
         session.commit()
         session.close()
 
 
-    def add_note_info(self, note_id, note_title, file_path):
+    def add_note_info(self, note_id, note_title, file_name):
         session = self.Session()
 
         # Check if note already exists in database
@@ -901,7 +1392,7 @@ class Database:
             return
 
         # Get file information
-        file_info = session.query(FileInfo).filter_by(file_path=file_path).first()
+        file_info = session.query(FileInfo).filter_by(file_name=file_name).first()
 
         # Add note information to database
         note_info = NoteInfo(
@@ -970,7 +1461,6 @@ def watcher(path_to_watch=None):
     observer = Observer()
     observer.schedule(event_handler, path=path_to_watch, recursive=False)
     observer.start()
-
     try:
         while True:
             time.sleep(1)
@@ -978,8 +1468,22 @@ def watcher(path_to_watch=None):
         observer.stop()
     observer.join()
 
+def second_function_example():
+    do_something_important()
+
+def do_something_important():
+    x = 1
+    for i in range(64):
+        x+=1
+
+
+
 def __observ_folder_run(observed_folders): # TODO: add support for multiple observed folders
     print(f"Observing folders {observed_folders}.")
+    watcher(observed_folders)
+
+def __observ_folder_and_scan_run(observed_folders): # TODO: add support for multiple observed folders
+    print(f"Observing folders and scan {observed_folders}.")
     watcher(observed_folders)
 
 
@@ -992,7 +1496,13 @@ def __full_run(tag, exclude_tags):
     return Joplin.perform_on_tagged_note_ids(__perform_ocr_for_note, tag_id, exclude_tags, tag)
 
 def mainloop():
-    
+    cwd = os.path.dirname(os.path.realpath(__file__))
+    # Create a new database
+    db_uri = f'sqlite:///{cwd}/ocr_file_db.db'
+    global db
+    db = Database(db_uri)
+
+        
     print("is running")
     __observ_folder_run(OBSERVED_FOLDERS)
     print("was running")
