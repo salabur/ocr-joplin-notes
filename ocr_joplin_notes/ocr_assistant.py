@@ -1629,16 +1629,15 @@ def threading_task_manager(is_uploading, tag, exclude_tags,_queue=None):
                     pass
                     # upload
                 elif not queue_note_ocr.empty():
+                    _queue_len = len(queue_note_ocr.queue)
                     IS_UPLOADING = True
+                    print(f'Starting to OCR notes from TAG. {_queue_len} to go')
                     
                     note_ocr_from_queue(queue_note_ocr)
                     IS_UPLOADING = False
 
 
 
-
-        
-    
 
 def __observ_folder_run(observed_folders): # TODO: add support for multiple observed folders
     print(f"Observing folders {observed_folders}.")
@@ -1702,23 +1701,7 @@ def mainloop():
     is_uploading = False # TODO : this is bullshit
     global IS_UPLOADING
     IS_UPLOADING = is_uploading
-    
-    # # testing
-    # _priority = 10
-    # for i in range(10):                        
-    #     queue_jobs.put((_priority,('res', i)))    
 
-    # _priority = 5
-    # for i in range(10):                        
-    #     queue_jobs.put((_priority,('res', i)))    
-
-    # _priority = 11
-    # for i in range(10):                        
-    #     queue_jobs.put((_priority,('res', i)))    
-    
-    # _priority = 2
-    # for i in range(10):                        
-    #     queue_jobs.put((_priority,('res', i)))
     
     watcher_thread = threading.Thread(target=watcher_helper, args=(OBSERVED_FOLDERS, queue_jobs))
     threading_task_manager_thread = threading.Thread(target=threading_task_manager, args=(is_uploading, tag, exclude_tags, queue_jobs,))
@@ -1734,7 +1717,6 @@ def mainloop():
     threading_run_mode_thread.join()
 
     
-        
 
     #__observ_folder_run(OBSERVED_FOLDERS)
     print("was running")
