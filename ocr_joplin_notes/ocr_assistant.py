@@ -1233,7 +1233,7 @@ def __ocr_resource(resource, create_preview=True):
 
     try:
         if mime_type[:5] == "image":
-            result = file_ocr.extract_text_from_image_object(obj_buffer, auto_rotate=AUTOROTATION, language=LANGUAGE)
+            result = extract_text_from_image_object(obj_buffer, auto_rotate=AUTOROTATION, language=LANGUAGE)
             if result is None:
                 return OcrResult(None)
             return OcrResult(result.pages, ResourceType.IMAGE)
@@ -1243,7 +1243,7 @@ def __ocr_resource(resource, create_preview=True):
             if ocr_result is None:
                 return OcrResult(None, success=False)
             if create_preview:
-                preview_file = _rotate_image_obj(file_ocr.pdf_page_as_image_obj(bytes_data, is_preview=True))
+                preview_file = _rotate_image_obj(pdf_page_as_image_obj(bytes_data, is_preview=True))
                 # TODO convert
                 return OcrResult(ocr_result.pages, ResourceType.PDF, preview_file)
             else:
@@ -1604,7 +1604,7 @@ def threading_task_manager(is_uploading, tag, exclude_tags,_queue=None):
                     _file_path = _msg_data[1]
                     print(f"File path: {_file_path}")
                     IS_UPLOADING = True
-                    print(f'Uloading from directory: {_file_path}')
+                    print(f'Uploading from directory: {_file_path}')
                     upload(_file_path)
                     IS_UPLOADING = False
                     time.sleep(_wait_time_short)
@@ -1628,7 +1628,7 @@ def threading_task_manager(is_uploading, tag, exclude_tags,_queue=None):
                     print(f"IS_UPLOADING: {IS_UPLOADING} ... how?")
                     pass
                     # upload
-                else:
+                elif not queue_note_ocr.empty():
                     IS_UPLOADING = True
                     
                     note_ocr_from_queue(queue_note_ocr)
