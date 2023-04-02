@@ -126,7 +126,6 @@ class JoplinDataWrapper:
         return _notes_all
 
 
-
     def perform_on_tagged_note_ids(self, usage_function, tag_id, exclude_tags, tag_name):
         # res = self.REST.rest_get('/tags/{}/notes'.format(tag_id), params=self.__paginate_by_title(page))
         # notes = res.json()["items"]
@@ -167,23 +166,50 @@ class JoplinDataWrapper:
 
 
 
+    def perform_on_tagged_note_ids_queue(self, usage_function, tag_id, exclude_tags, tag_name, queue):
+        # res = self.REST.rest_get('/tags/{}/notes'.format(tag_id), params=self.__paginate_by_title(page))
+        # notes = res.json()["items"]
 
-
-
+        notes = self.get_all_notes_with_tag_id(tag_id=tag_id, tag_name=tag_name)
+        notes_amount = len(notes)
+        notes_ready = 0
+        _priority = 100
+        start_time = time.time()
         for note in notes:
             note_id = note.get("id")
             all_tags = self.get_all_tags_from_note(note_id)  # get all tags of the current note
             # check if any tag in the list exclude_tags is equal to any tag of the current notes' tags
             if len(set(exclude_tags).intersection(all_tags)) == 0:
-                usage_function(note_id)
+                # usage_function(note_id)
+                if usage_function == '__perform_ocr_for_note':
+                    queue.put((_priority,('note_ocr', note_id)))
+                else:
+                    print(f"find a soloution!: {usage_function}")
+            
             else:
                 note = self.get_note_by_id(note_id)
+                excluded_tags = set(exclude_tags).intersection(all_tags)
                 print(f"------------------------------------\nnote: {note.title}")
-                print("Excluding this note\n")
-        if res.json()["has_more"]:
-            return self.perform_on_tagged_note_ids(usage_function, tag_id, exclude_tags, page + 1)
-        else:
-            return 0
+                print(f"Excluding this note because it contains the following excluded tags: {', '.join(excluded_tags)}")
+
+
+            notes_ready+=1
+            notes_perc = 100 / notes_amount * notes_ready
+
+            elapsed_time = time.time() - start_time
+            time_per_iteration = elapsed_time / notes_ready
+            remaining_time = time_per_iteration * (notes_amount - notes_ready)
+
+            remaining_str = self.format_time_string(remaining_time)
+            elapsed_time_str = self.format_time_string(elapsed_time)
+
+            print(f"{notes_ready}/{notes_amount} ({notes_perc:.2f}%) of notes in queue, {remaining_str} remaining - {elapsed_time_str} elapsed")
+
+
+        print("All notes processed.")
+        return None
+
+
 
     def get_all_notes(self):
         print("Getting all notes")

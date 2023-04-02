@@ -106,6 +106,9 @@ from sqlalchemy.ext.declarative import declarative_base
 import threading
 import queue
 
+from dataclasses import dataclass, field
+from typing import Any
+
 Base = declarative_base()
 
 
@@ -129,6 +132,8 @@ except ModuleNotFoundError as e:
 
 #dev
 
+global IS_UPLOADING
+IS_UPLOADING = False
 global MAX_UPLOAD_FILE_SIZE
 MAX_UPLOAD_FILE_SIZE = 100000000
 global NOTEBOOK_ID
@@ -155,6 +160,10 @@ else:
     print("Environment variable JOPLIN_SERVER not set, using default value: http://localhost:41184")
 
 
+@dataclass(order=True)
+class PrioritizedItem:
+    priority: int
+    item: Any=field(compare=False)
 
 class DirectoryFileSystemHandler(FileSystemEventHandler):
 
@@ -166,7 +175,8 @@ class DirectoryFileSystemHandler(FileSystemEventHandler):
                 print(f"Filesize = {filesize}. Maybe too big for Joplin, skipping upload")
                 return False
             else:
-                shared_queue.put(('upload', f'{path}'))
+                _priority = 10
+                queue_jobs.put((_priority,('upload', f'{path}')))
                 # return True
                 # i = 1
                 # max_retries = 5
@@ -243,6 +253,16 @@ def set_observed_folders(observed_folders):
 def set_mode(mode):
     global MODE
     MODE = mode
+
+def set_tag(tag):
+    global TAG
+    TAG = tag
+
+def set_exclude_tags(exclude_tags):
+    global EXCLUDE_TAGS
+    EXCLUDE_TAGS = exclude_tags
+
+
 
 
 def set_dry_run(safe):
@@ -338,6 +358,16 @@ def create_resource(filename):
         "props": (None, f'{{"title":"{title}", "filename":"{basefile}"}}'),
     }
     response = requests.post(JOPLIN_SERVER + "/resources" + "?" + JOPLIN_TOKEN, files=files)
+    _file_ext = response.json()["file_extension"]
+    _id = response.json().get("id")
+    _mime = response.json().get("mime")
+    _created_time = response.json().get("created_time")
+    _updated_time = response.json().get("updated_time")
+    _user_created_time = response.json().get("user_created_time")
+    _user_updated_time = response.json().get("user_updated_time")
+    # if len(set([a, b, c, d, e])) > 1:
+    # # TODO update ocr sice note has changed? - noo store last change in db and then compare
+    
     return response.json()
 
 
@@ -914,11 +944,31 @@ def pdf_page_as_image_obj(bytes, page_num=0, is_preview=False):
 
 
 
-def upload_from_queue(queue): # 
+def note_ocr_from_queue(queue): # 
     """ Get the default Notebook ID and process the passed in file"""
-    basefile = os.path.basename(filename)
-    filename = 
-    upload(filename)
+    #print(f"(upload_from_queue) Uploading file: {_file_path}")
+    # queue_note_ocr
+    if not queue.empty():
+        message = queue.get()
+        print(f"Uploader received a message: {message}")
+        _msg_data = message
+        if _msg_data[0] == 'note_ocr':
+            _note_id = _msg_data[1]
+            #print(f"File path: {_file_path}")
+            # TODO start in own thread with own queue
+            IS_UPLOADING = True
+            print(f'OCR running now for note: {_note_id}')
+            __perform_ocr_for_note(_note_id)
+            IS_UPLOADING = False
+
+            #print(f"Resource: {_res}")
+            return True
+        else:
+            return False
+
+        # basefile = os.path.basename(_file_path)
+        # filename = _file_path # TODO this is bullshit, only testing
+        #upload(__file_path)
 
 
 def upload(filename): # 
@@ -1050,6 +1100,38 @@ def apply_tags(text_to_match, note_id):
 
 
 
+def run_mode_queue(mode, tag, exclude_tags, queue):
+    if not Joplin.is_valid_connection():
+        return -1
+    if mode == "TAG_NOTES":
+        print("Tagging notes. This might take a while. You can follow the progress by watching the tags in Joplin")
+        if tag is None and (exclude_tags is None or len(exclude_tags) == 0):
+            Joplin.perform_on_all_note_ids(__tag_note_with_source)
+        else:
+            tag_id = Joplin.find_tag_id_by_title(tag)
+            if tag_id is None:
+                print("tag not found")
+                return -1
+            Joplin.perform_on_tagged_note_ids(__tag_note_with_source, tag_id, exclude_tags, tag)
+        return 0
+    elif mode == "DRY_RUN":
+        set_dry_run(True)
+        return __full_run(tag, exclude_tags)
+    elif mode == "FULL_RUN":
+        set_dry_run(False)
+        return __full_run_queue(tag, exclude_tags, queue)
+    elif mode == "OBSERV_FOLDER":
+        set_dry_run(False)
+        return __observ_folder_run(OBSERVED_FOLDERS)
+    elif mode == "OBSERV_FOLDER_AND_SCAN":
+        set_dry_run(False)
+        return __observ_folder_and_scan_run(OBSERVED_FOLDERS)
+    else:
+        print(f"Mode {mode} not supported")
+    return -1
+
+
+
 def run_mode(mode, tag, exclude_tags):
     if not Joplin.is_valid_connection():
         return -1
@@ -1139,6 +1221,7 @@ def __perform_ocr_for_note(note_id):
     Joplin.create_tag(result_tag.value)
     Joplin.tag_note(note_id, result_tag.value)
     return result_tag
+
 
 
 def __ocr_resource(resource, create_preview=True):
@@ -1459,8 +1542,11 @@ class Database:
 
 
 
-
-
+def watcher_helper(path_to_watch=None, _queue=None):
+    _queue = _queue
+    path_to_watch = path_to_watch
+    print(f'watcher starting for path: {path_to_watch}')
+    watcher(path_to_watch)
 
 
 def watcher(path_to_watch=None):
@@ -1488,15 +1574,71 @@ def do_something_important():
         x+=1
     print('counted do_something_important')
 
-def threading_task_manager():
-    upload_thread = threading.Thread(target=upload_from_queue, args=(shared_queue,))
-    # upload_thread = threading.Thread(target=scanner_run, args=(shared_queue,))
+def threading_task_manager(is_uploading, tag, exclude_tags,_queue=None):
+    _queue=_queue
+    _file_path = None
 
-    # create one thread for scanning of not jet OCRed or files (ressources) in notes 
+    _wait_time_short = 0.05
+    _wait_time_long = 1
+    #upload_thread = threading.Thread(target=upload_from_queue, args=(queue_upload,))
+    # upload_thread = threading.Thread(target=scanner_run, args=(queue_jobs,))
+    
+                # upload_thread.start()
+                # upload_thread.join()
+
+    # TODO
+    # create one thread for scanning of not jet OCRed or files (resources) in notes 
     # and a second one to ocr the found note
+    _is_running = True
+    
+    global IS_UPLOADING
+    IS_UPLOADING = is_uploading
 
-    upload_thread.start()
-    upload_thread.join()
+    while _is_running:
+        if not IS_UPLOADING:
+            if not queue_jobs.empty():
+                message = queue_jobs.get()
+                print(f"Watcher received a message: {message}")
+                _msg_data =message[1]
+                if _msg_data[0] == 'upload':
+                    _file_path = _msg_data[1]
+                    print(f"File path: {_file_path}")
+                    IS_UPLOADING = True
+                    print(f'Uloading from directory: {_file_path}')
+                    upload(_file_path)
+                    IS_UPLOADING = False
+                    time.sleep(_wait_time_short)
+                elif _msg_data[0] == 'res':
+                    _res = _msg_data[1]
+                    print(f"Resource: {_res}")
+                    time.sleep(_wait_time_short)
+                elif _msg_data[0] == 'note_ocr':
+                    _note_id = _msg_data[1]
+                    print(f"Note ID: {_note_id} added to the OCR list. {_msg_data}")
+                    queue_note_ocr.put(('note_ocr', f'{_note_id}'))
+                    
+                    #time.sleep(_wait_time_short)
+
+                time.sleep(_wait_time_short)
+
+            else:
+                
+                time.sleep(_wait_time_long)
+                if IS_UPLOADING:
+                    print(f"IS_UPLOADING: {IS_UPLOADING} ... how?")
+                    pass
+                    # upload
+                else:
+                    IS_UPLOADING = True
+                    
+                    note_ocr_from_queue(queue_note_ocr)
+                    IS_UPLOADING = False
+
+
+
+
+        
+    
 
 def __observ_folder_run(observed_folders): # TODO: add support for multiple observed folders
     print(f"Observing folders {observed_folders}.")
@@ -1515,32 +1657,89 @@ def __full_run(tag, exclude_tags):
         return -1
     return Joplin.perform_on_tagged_note_ids(__perform_ocr_for_note, tag_id, exclude_tags, tag)
 
+def __full_run_queue(tag, exclude_tags, queue):
+    print("Starting OCR for tag {}.".format(tag))
+    tag_id = Joplin.find_tag_id_by_title(tag)
+    if tag_id is None:
+        print("Tag not found or specified")
+        return -1
+    
+    Joplin.perform_on_tagged_note_ids_queue('__perform_ocr_for_note', tag_id, exclude_tags, tag, queue)
+    # Joplin.perform_on_tagged_note_ids_queue(__perform_ocr_for_note, tag_id, exclude_tags, tag)
+
+    return 
+
 def mainloop():
     cwd = os.path.dirname(os.path.realpath(__file__))
     # Create a new database
     db_uri = f'sqlite:///{cwd}/ocr_file_db.db'
+
     global db
     db = Database(db_uri)
 
-        
+    global queue_jobs
+    queue_jobs = queue.PriorityQueue()
+
+    global queue_pages
+    queue_pages = queue.PriorityQueue()
+
+    global queue_note_ocr
+    queue_note_ocr = queue.Queue()
+
+    set_mode('FULL_RUN')
+    
+    tag="ojn_markup_evernote"
+    exclude_tags=None,
+
+    set_tag(tag)
+    set_exclude_tags(exclude_tags)
+    set_moveto('')
+    set_autotag('no')
+    set_autorotation(True)
+    set_add_previews(True)
+    set_language('deu+eng')
+
+    is_uploading = False # TODO : this is bullshit
+    global IS_UPLOADING
+    IS_UPLOADING = is_uploading
+    
+    # # testing
+    # _priority = 10
+    # for i in range(10):                        
+    #     queue_jobs.put((_priority,('res', i)))    
+
+    # _priority = 5
+    # for i in range(10):                        
+    #     queue_jobs.put((_priority,('res', i)))    
+
+    # _priority = 11
+    # for i in range(10):                        
+    #     queue_jobs.put((_priority,('res', i)))    
+    
+    # _priority = 2
+    # for i in range(10):                        
+    #     queue_jobs.put((_priority,('res', i)))
+    
+    watcher_thread = threading.Thread(target=watcher_helper, args=(OBSERVED_FOLDERS, queue_jobs))
+    threading_task_manager_thread = threading.Thread(target=threading_task_manager, args=(is_uploading, tag, exclude_tags, queue_jobs,))
+    threading_run_mode_thread = threading.Thread(target=run_mode_queue, args=(MODE, tag, exclude_tags, queue_jobs,))
+    
+    watcher_thread.start()
+    threading_task_manager_thread.start()
+    threading_run_mode_thread.start()
+
     print("is running")
-    __observ_folder_run(OBSERVED_FOLDERS)
+    watcher_thread.join()
+    threading_task_manager_thread.join()
+    threading_run_mode_thread.join()
+
+    
+        
+
+    #__observ_folder_run(OBSERVED_FOLDERS)
     print("was running")
 
 
 if __name__ == "__main__":
-    global shared_queue
-    shared_queue = queue.Queue()
 
-    watcher_thread = threading.Thread(target=watcher, args=(None, shared_queue))
-    threading_task_manager_thread = threading.Thread(target=threading_task_manager, args=(shared_queue,))
-
-    
-    watcher_thread.start()
-    threading_task_manager.start()
-
-    watcher_thread.join()
-    threading_task_manager_thread.join()
-
-    
     mainloop()
