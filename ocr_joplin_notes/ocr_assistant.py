@@ -41,7 +41,7 @@ import json
 import requests
 import csv
 from tabulate import tabulate
-from watchdog.observers import Observer
+from watchdog.observers.polling import PollingObserver
 from watchdog.events import FileSystemEventHandler
 #from img_processor2 import ImageProcessor
 #from api_token import get_token_suffix
@@ -1554,7 +1554,7 @@ def watcher(path_to_watch=None):
         path_to_watch = str(Path.home())
     event_handler = DirectoryFileSystemHandler()
     print(f"Monitoring directory: {path_to_watch}")
-    observer = Observer()
+    observer = PollingObserver()
     observer.schedule(event_handler, path=path_to_watch, recursive=False)
     observer.start()
     try:
@@ -1626,7 +1626,6 @@ def threading_task_manager(is_uploading, tag, exclude_tags,_queue=None):
                 time.sleep(_wait_time_long)
                 if IS_UPLOADING:
                     print(f"IS_UPLOADING: {IS_UPLOADING} ... how?")
-                    pass
                     # upload
                 elif not queue_note_ocr.empty():
                     _queue_len = len(queue_note_ocr.queue)
